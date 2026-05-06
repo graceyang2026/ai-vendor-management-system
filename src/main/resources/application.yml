@@ -1,0 +1,15 @@
+spring:
+  datasource:
+    # 确保 vendor_db 这个数据库在 MySQL 里已经 CREATE 了
+    url: jdbc:mysql://localhost:3306/vendor_db?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+    username: root
+    password: 123456
+    driver-class-name: com.mysql.cj.jdbc.Driver # 建议显式加上
+
+  jpa:
+    hibernate:
+      ddl-auto: update # 自动建表
+    show-sql: true
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQLDialect # 建议显式加上
