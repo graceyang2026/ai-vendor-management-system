@@ -13,7 +13,7 @@ import java.util.Optional;
 @RequestMapping("/api/ai-suppliers")
 public class AISupplierController {
 
-    private final AISupplierService service;
+    private final AISupplierService service ;
 
     public AISupplierController(AISupplierService service) {
         this.service = service;
