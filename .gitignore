@@ -1,4 +1,15 @@
 /.idea/
-/node_modules/
-/target/
 /test/
+.DS_Store
+
+# backend (Maven)
+srm-backend/target/
+srm-backend/.mvn/wrapper/maven-wrapper.jar
+
+# frontend (Vite/npm)
+srm-frontend/node_modules/
+srm-frontend/dist/
+srm-frontend/.vite/
+
+# secrets
+.env

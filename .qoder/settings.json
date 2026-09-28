@@ -1,0 +1,38 @@
+{
+  "description": "修改后端 Java / 前端 Vue/TS 文件后自动执行编译与测试的 Hook 配置",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": {
+          "tools": ["Edit", "Write", "MultiEdit"],
+          "filePattern": "srm-backend/**/*.java"
+        },
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd srm-backend && ./mvnw -q test",
+            "description": "修改后端 Java 文件后自动跑单元测试"
+          },
+          {
+            "type": "command",
+            "command": "bash .qoder/skills/check-coverage.sh",
+            "description": "校验 JaCoCo 覆盖率是否 > 85%,不达标时提示调用 coverage-fixer 子代理"
+          }
+        ]
+      },
+      {
+        "matcher": {
+          "tools": ["Edit", "Write", "MultiEdit"],
+          "filePattern": "srm-frontend/**/*.{vue,ts}"
+        },
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd srm-frontend && npm run build",
+            "description": "修改前端 Vue/TS 文件后自动执行类型检查与构建,确保契约类型对齐"
+          }
+        ]
+      }
+    ]
+  }
+}

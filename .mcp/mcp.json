@@ -1,0 +1,29 @@
+{
+  "mcpServers": {
+    "mysql": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-mysql"],
+      "env": {
+        "MYSQL_HOST": "${DB_HOST}",
+        "MYSQL_PORT": "${DB_PORT}",
+        "MYSQL_USER": "${DB_USER}",
+        "MYSQL_PASSWORD": "${DB_PASSWORD}",
+        "MYSQL_DATABASE": "${DB_NAME}"
+      },
+      "description": "读取项目根目录 .env 中的数据库凭据,连接 srm-backend 使用的 vendor_db 执行只读/管理查询"
+    },
+    "git": {
+      "command": "uvx",
+      "args": ["mcp-server-git", "--repository", "."],
+      "description": "对当前仓库(srm-backend + srm-frontend 双工程)执行 git 状态查询、diff、log 等操作"
+    },
+    "terminal": {
+      "command": "npx",
+      "args": ["-y", "mcp-server-commands"],
+      "env": {
+        "ALLOWED_CWD": "."
+      },
+      "description": "在项目根目录下执行受限终端命令(如 cd srm-backend && ./mvnw test、cd srm-frontend && npm run build),用于测试与覆盖率自愈流程"
+    }
+  }
+}

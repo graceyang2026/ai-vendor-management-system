@@ -1,0 +1,53 @@
+spring:
+  application:
+    name: srm-backend
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+  datasource:
+    # 确保 ${DB_NAME} 这个数据库已经在 MySQL/KingbaseES 中 CREATE 了；凭据从 .env 读取，禁止硬编码
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:vendor_db}?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true&characterEncoding=UTF-8
+    username: ${DB_USER:root}
+    password: ${DB_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  sql:
+    init:
+      mode: always
+      continue-on-error: false
+
+server:
+  port: ${SERVER_PORT:8080}
+
+mybatis-plus:
+  mapper-locations: classpath*:mapper/**/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+  global-config:
+    db-config:
+      logic-delete-field: deleted
+      logic-delete-value: "1"
+      logic-not-delete-value: "0"
+
+srm:
+  jwt:
+    # 生产环境务必在 .env 中覆盖为一个足够长的随机密钥，此处默认值仅用于本地开发
+    secret: ${JWT_SECRET:local-dev-only-please-override-in-dotenv-file-min-32-chars}
+    expiration-minutes: ${JWT_EXPIRATION_MINUTES:480}
+  seed-demo-users: ${SEED_DEMO_USERS:true}
+
+logging:
+  level:
+    com.srm.core: debug
+
+
+#    依据 docs/api-spec.md + docs/backend-interface-design.md + .qoder/rules.md
+#    在 srm-backend/ 实现 SRM 后端业务代码；实现完成后运行 bash
+#    .qoder/skills/check-coverage.sh，若退出码非 0（覆盖率未达标或测试未过），按
+#    .qoder/agents/coverage-fixer.json 的流程自动补测直到该脚本返回 0。
+#
+#    check-coverage.sh 里已经把"跑测试 → 读 jacoco.csv → 算行/分支覆盖率 → 判断是否
+#    ≥85%"这条链路串好了，Qoder
+#    只要跑这个脚本就能知道自己有没有达标，不需要你手动算百分比。前端同理，把
+#    srm-backend/backend-dev 换成
+#    srm-frontend/frontend-dev，覆盖率门禁那部分脚本里对应的是 npm run
+#    build（类型检查通过即算过，前端目前没配单测覆盖率门禁）。
