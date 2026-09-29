@@ -218,7 +218,63 @@ performance_evaluation.reviewed_by → sys_user.id
 
 ---
 
-# 6. 生命周期申请表 `lifecycle_request`
+# 6. 绩效评价草稿表 `performance_evaluation_draft`
+
+保存绩效评价提交前的客观事实明细草稿，对应 TDD 6.2 节 D4_1 `PerformanceEvaluationDraft`。STAFF 发起评价、录入事实数据阶段落此表；提交后由算分引擎读取草稿计算得分，写入 `performance_evaluation`，草稿随即逻辑删除。
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|---|---|---|---|---|
+| id | BIGINT | 是 | - | 主键 |
+| supplier_id | BIGINT | 是 | - | 供应商 ID |
+| period_start | DATE | 是 | - | 评价开始日期 |
+| period_end | DATE | 是 | - | 评价结束日期 |
+| mode | VARCHAR(20) | 是 | manual | 计算模式 |
+| fact_record | JSON | 否 | NULL | 原始事实数据 |
+| status | VARCHAR(20) | 是 | DRAFT | 草稿状态 |
+| created_by | BIGINT | 是 | - | 创建人 |
+| created_at | DATETIME | 是 | CURRENT_TIMESTAMP | 创建时间 |
+| updated_at | DATETIME | 是 | CURRENT_TIMESTAMP | 更新时间 |
+| deleted | TINYINT(1) | 是 | 0 | 逻辑删除 |
+
+### mode
+
+```text
+manual
+mock
+```
+
+### status
+
+```text
+DRAFT
+SUBMITTED
+```
+
+### 索引
+
+```text
+INDEX(supplier_id)
+INDEX(created_by)
+INDEX(status)
+INDEX(supplier_id, period_start, period_end)
+```
+
+### 关联
+
+```text
+performance_evaluation_draft.supplier_id → supplier.id
+performance_evaluation_draft.created_by → sys_user.id
+```
+
+### 业务规则
+
+- 草稿不做同周期唯一性校验，唯一性校验在提交（生成 `performance_evaluation` 记录）时进行。
+- `mode = mock` 时，`fact_record` 在创建草稿时由后端自动生成，不允许编辑。
+- 提交成功后草稿逻辑删除，不可再编辑或再次提交。
+
+---
+
+# 7. 生命周期申请表 `lifecycle_request`
 
 保存供应商暂停、恢复等申请。
 
@@ -243,6 +299,7 @@ performance_evaluation.reviewed_by → sys_user.id
 ```text
 SUSPEND
 RESUME
+ELIMINATE
 ```
 
 ### status
@@ -271,7 +328,7 @@ lifecycle_request.decided_by → sys_user.id
 
 ---
 
-# 7. 审计日志表 `audit_log`
+# 8. 审计日志表 `audit_log`
 
 记录关键业务操作。
 
@@ -294,6 +351,7 @@ lifecycle_request.decided_by → sys_user.id
 ```text
 SUPPLIER
 PERFORMANCE_EVALUATION
+PERFORMANCE_EVALUATION_DRAFT
 LIFECYCLE_REQUEST
 ```
 
@@ -314,7 +372,7 @@ INDEX(created_at)
 
 ---
 
-# 8. 表关系
+# 9. 表关系
 
 ```text
 sys_user
@@ -324,6 +382,8 @@ sys_user
    ├────────────── performance_evaluation.created_by
    │
    ├────────────── performance_evaluation.reviewed_by
+   │
+   ├────────────── performance_evaluation_draft.created_by
    │
    ├────────────── lifecycle_request.applied_by
    │
@@ -338,12 +398,14 @@ supplier
    │
    ├── performance_evaluation
    │
+   ├── performance_evaluation_draft
+   │
    └── lifecycle_request
 ```
 
 ---
 
-# 9. 核心业务关系
+# 10. 核心业务关系
 
 ### 供应商
 
@@ -351,6 +413,7 @@ supplier
 
 - 多个资质
 - 多个绩效评价
+- 多个绩效评价草稿
 - 多个生命周期申请
 - 多条审计日志
 
@@ -359,6 +422,7 @@ supplier
 一个用户可以：
 
 - 创建多个供应商
+- 创建多个绩效评价草稿
 - 创建多个绩效评价
 - 创建多个生命周期申请
 - 审核多个供应商
@@ -367,7 +431,7 @@ supplier
 
 ---
 
-# 10. 建表实现规则
+# 11. 建表实现规则
 
 Qoder 建表时遵循以下规则：
 
@@ -378,7 +442,7 @@ Qoder 建表时遵循以下规则：
 5. 外键关系按本文档处理
 6. `supplier.tax_no` 唯一
 7. `sys_user.username` 唯一
-8. `performance_evaluation.fact_record` 使用 JSON
+8. `performance_evaluation.fact_record`、`performance_evaluation_draft.fact_record` 使用 JSON
 9. 绩效分数字段使用 `DECIMAL(5,2)`
 10. `version` 用于乐观锁
 11. 查询频繁的状态、供应商 ID、创建人字段建立索引

@@ -139,6 +139,8 @@
 
 否则返回 `40302`。
 
+> 本接口覆盖 TDD 表1「解锁/重新提交」权限项：供应商处于 `RETURNED` 状态时，由 STAFF 修改后通过 `POST /suppliers/{id}/submit` 重新提交审核，不存在单独的解锁接口。
+
 ### Response
 
 返回 `SupplierResponse`。
@@ -177,6 +179,8 @@
   "updated_at": "2026-01-01T10:00:00"
 }
 ```
+
+> `created_by_name`、`business_license_url` 为关联查询结果（分别 JOIN `sys_user`、`supplier_qualification`），数据库中无对应列，不需要为此建冗余字段。
 
 ---
 
@@ -342,11 +346,15 @@
 
 # 5. 绩效评价
 
-## POST `/performance/evaluations`
+> 对应 TDD 6.2 节 D4_1 `PerformanceEvaluationDraft`（评价草稿表）：STAFF 发起评价并录入客观事实明细时先落草稿，提交后才由算分引擎计算得分并生成正式的 `PerformanceEvaluation` 记录（`PENDING_REVIEW`）。不存在跳过草稿直接一步创建正式评价的接口。
+>
+> `mode` 与后端适配器实现（`ManualInputMetricAdapter` / `MockDataMetricAdapter` 等）的映射属于内部实现选择；TDD 各章节对适配器命名前后不一致（如 6.1 节 `ExternalSystemMetricAdapter` 与 7.2 节含义互换、8.1 节又用 `ExternalERPAdapter`），本 API 文档不依赖具体类名，Qoder 实现时以 `mode: manual/mock` 为唯一对外契约。
+
+## POST `/performance/evaluations/drafts`
 
 **权限：STAFF**
 
-创建绩效评价。
+发起绩效评价，创建草稿。
 
 ### Request
 
@@ -380,7 +388,7 @@
 
 ### mock
 
-忽略 `fact_record`，由后端生成事实数据。
+忽略传入的 `fact_record`，创建草稿时立即由后端生成模拟事实数据并存入草稿。
 
 ### 禁止字段
 
@@ -395,11 +403,131 @@ Request 中不得出现：
 - `grade`
 - `risk_warning`
 
-这些字段全部由后端计算。
+这些字段全部由后端计算，且只会在提交草稿（`submit`）之后才产生。
 
 ### 规则
 
-同一供应商 + 同一评价周期，如果已有：
+创建草稿本身不做同周期唯一性校验（唯一性校验在提交时进行），创建成功后：
+
+`status = DRAFT`
+
+### Response
+
+返回 `PerformanceEvaluationDraftResponse`：
+
+```json
+{
+  "id": 1,
+  "supplier_id": 1,
+  "period_start": "2026-01-01",
+  "period_end": "2026-03-31",
+  "mode": "manual",
+  "fact_record": {
+    "total_batches": 100,
+    "delayed_batches": 5,
+    "avg_delay_days": 1.5,
+    "qc_total_batches": 100,
+    "qc_failed_batches": 2,
+    "major_accidents": 0,
+    "price_deviation_rate": 1.2,
+    "complaint_overtime_count": 1
+  },
+  "status": "DRAFT",
+  "created_by": 1,
+  "created_at": "2026-04-01T10:00:00",
+  "updated_at": "2026-04-01T10:00:00"
+}
+```
+
+---
+
+## PUT `/performance/evaluations/drafts/{id}`
+
+**权限：STAFF**
+
+编辑草稿的客观事实数据。
+
+### 规则
+
+仅允许：
+
+- 当前状态为 `DRAFT`
+- 当前用户是创建人
+- `mode = manual`（`mock` 草稿的 `fact_record` 由后端生成，不允许修改）
+
+否则返回 `40302`。
+
+### Response
+
+返回 `PerformanceEvaluationDraftResponse`。
+
+---
+
+## DELETE `/performance/evaluations/drafts/{id}`
+
+**权限：STAFF**
+
+删除草稿。
+
+### 规则
+
+仅允许：
+
+- 当前状态为 `DRAFT`
+- 当前用户是创建人
+
+使用逻辑删除。
+
+---
+
+## GET `/performance/evaluations/drafts/{id}`
+
+**权限：登录用户**
+
+获取草稿详情。
+
+### Response
+
+返回 `PerformanceEvaluationDraftResponse`。
+
+---
+
+## GET `/performance/evaluations/drafts`
+
+**权限：登录用户**
+
+查询草稿列表。
+
+### Query
+
+| 参数 | 类型 | 必填 | 默认值 |
+|---|---|---|---|
+| supplier_id | long | 否 | - |
+| status | string | 否 | - |
+| page | int | 否 | 1 |
+| page_size | int | 否 | 20 |
+
+### Response
+
+分页 `PerformanceEvaluationDraftResponse`。
+
+---
+
+## POST `/performance/evaluations/drafts/{id}/submit`
+
+**权限：STAFF**
+
+提交草稿，触发算分引擎并生成正式绩效评价。
+
+### 规则
+
+仅允许：
+
+- 当前状态为 `DRAFT`
+- 当前用户是创建人
+- `fact_record` 完整（`manual` 模式；`mock` 模式创建草稿时已自动生成）
+
+同一供应商 + 同一评价周期，如果已有正式评价处于：
 
 - `PENDING_REVIEW`
 - `RETURNED`
@@ -408,9 +536,16 @@ Request 中不得出现：
 
 `40902 DUPLICATE_IN_PROGRESS`
 
-创建成功后：
+提交成功后：
 
-`status = PENDING_REVIEW`
+1. 后端依据 `fact_record` 计算五维度得分、综合得分与评级
+2. 创建正式 `PerformanceEvaluation` 记录，`status = PENDING_REVIEW`
+3. 草稿状态更新为 `SUBMITTED` 并逻辑删除，不可再编辑或再次提交
+4. 记录审计日志
+
+### Response
+
+返回 `PerformanceEvaluationResponse`（结构同 `GET /performance/evaluations/{id}`）。
 
 ---
 
@@ -571,6 +706,7 @@ Request 中不得出现：
 
 - `SUSPEND`
 - `RESUME`
+- `ELIMINATE`
 
 ### 规则
 
@@ -582,9 +718,15 @@ Request 中不得出现：
 
 供应商必须为 `SUSPENDED`。
 
+`ELIMINATE`：
+
+供应商必须为 `NORMAL` 或 `SUSPENDED`。
+
 同一供应商存在相同类型的 `PENDING` 申请时，返回：
 
 `40902`
+
+> 资质过期仅由系统自动标记风险预警（`risk_warning = true`），不会自动生成任何生命周期申请。AUDITOR 不能绕过流程直接修改供应商状态，只能对 STAFF 提交的申请做出 `APPROVE`/`REJECT` 决策（TDD 5.1 节）。
 
 ---
 
@@ -614,6 +756,8 @@ Request 中不得出现：
 ]
 ```
 
+> `applied_by_name` 为关联查询结果（JOIN `sys_user`），数据库中无对应列。
+
 ---
 
 ## POST `/lifecycle-requests/{id}/decision`
@@ -640,6 +784,12 @@ Request 中不得出现：
 `RESUME + APPROVE`：
 
 供应商 → `NORMAL`
+
+`ELIMINATE + APPROVE`：
+
+供应商 → `ELIMINATED`
+
+`ELIMINATED` 为终态：不可再对该供应商发起任何生命周期申请（`SUSPEND`/`RESUME`/`ELIMINATE`）。
 
 `REJECT`：
 
@@ -668,6 +818,7 @@ Request 中不得出现：
 
 - `SUPPLIER`
 - `PERFORMANCE_EVALUATION`
+- `PERFORMANCE_EVALUATION_DRAFT`
 - `LIFECYCLE_REQUEST`
 
 ### Response
@@ -794,9 +945,13 @@ Request 中不得出现：
 
 `PENDING_REVIEW` / `APPROVED` / `RETURNED`
 
+### PerformanceEvaluationDraftStatus
+
+`DRAFT` / `SUBMITTED`
+
 ### LifecycleRequestType
 
-`SUSPEND` / `RESUME`
+`SUSPEND` / `RESUME` / `ELIMINATE`
 
 ### LifecycleRequestStatus
 

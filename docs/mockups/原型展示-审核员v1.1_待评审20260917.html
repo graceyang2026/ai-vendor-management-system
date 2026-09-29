@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>供应商管理系统 - 审计员控制台</title>
+    <!-- 引入 Element Plus 样式 -->
+    <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css" />
+    <!-- 引入 Vue 3 与 Element Plus -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://unpkg.com/element-plus"></script>
+    <style>
+        * { box-sizing: border-box; }
+        html, body, #app {
+            margin: 0; padding: 0; height: 100%; width: 100%;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background-color: #f5f7fa; overflow: hidden;
+        }
+        /* 外层主容器：强制垂直布局，保障 Header 不被遮挡 */
+        .layout-container { height: 100vh; display: flex; flex-direction: column; }
+        .header-bar {
+            height: 60px; background-color: #2b2d42; color: #fff;
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 0 20px; flex-shrink: 0; z-index: 100; box-shadow: 0 2px 5px rgba(0,0,0,0.15);
+        }
+        .logo { font-size: 18px; font-weight: bold; letter-spacing: 0.5px; }
+        .user-info { font-size: 14px; color: #edf2f4; display: flex; align-items: center; }
+        
+        .body-container { flex: 1; display: flex; overflow: hidden; }
+        .aside-menu { background-color: #1a1b26; color: #fff; height: 100%; overflow-y: auto; }
+        .el-menu { border-right: none; }
+        
+        .main-content { flex: 1; padding: 20px; background-color: #f0f2f5; overflow-y: auto; height: 100%; }
+        .page-card {
+            background: #fff; padding: 24px; border-radius: 4px;
+            box-shadow: 0 1px 4px rgba(0,21,41,.08); min-height: calc(100vh - 100px);
+        }
+        .page-header {
+            display: flex; align-items: center; justify-content: space-between;
+            border-bottom: 1px solid #ebeef5; padding-bottom: 16px; margin-bottom: 20px;
+        }
+        .page-title { font-size: 18px; font-weight: bold; color: #303133; }
+        .detail-section { margin-bottom: 24px; }
+        .detail-section h4 { border-left: 4px solid #67C23A; padding-left: 8px; margin-bottom: 12px; color: #303133; }
+        .audit-box { background: #fdf6ec; border: 1px solid #faecd8; border-radius: 6px; padding: 20px; margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <el-container class="layout-container" direction="vertical">
+            <!-- 顶栏导航 -->
+            <el-header height="60px" class="header-bar">
+                <div class="logo">SRM 供应商管理系统 | 审计与合规控制台</div>
+                <div class="user-info">
+                    <el-tag type="warning" size="small" style="margin-right: 12px;">审计员 (Auditor)</el-tag>
+                    <span>欢迎您，Auditor_01 (合规审计部)</span>
+                </div>
+            </el-header>
+
+            <el-container class="body-container" direction="horizontal">
+                <!-- 侧边栏菜单 -->
+                <el-aside width="220px" class="aside-menu">
+                    <el-menu :default-active="activeMenu" background-color="#1a1b26" text-color="#a9b1d6" active-text-color="#67C23A" @select="handleMenuSelect">
+                        <el-menu-item index="audit-list">
+                            <el-icon><svg viewBox="0 0 1024 1024"><path fill="currentColor" d="M512 128a384 384 0 1 0 0 768 384 384 0 0 0 0-768zm0 64a320 320 0 1 1 0 640 320 320 0 0 1 0-640z"></path></svg></el-icon>
+                            <span>供应商准入资质审核</span>
+                        </el-menu-item>
+                        <el-menu-item index="status-decision-list">
+                            <el-icon><svg viewBox="0 0 1024 1024"><path fill="currentColor" d="M512 64l384 192v512L512 960 128 768V256z"></path></svg></el-icon>
+                            <span>状态变更终审决策</span>
+                        </el-menu-item>
+                        <el-menu-item index="perf-review-list">
+                            <el-icon><svg viewBox="0 0 1024 1024"><path fill="currentColor" d="M512 64l128 256 288 32-208 192 64 288-272-144-272 144 64-288-208-192 288-32z"></path></svg></el-icon>
+                            <span>绩效评价复核</span>
+                        </el-menu-item>
+                        <el-menu-item index="log-list">
+                            <el-icon><svg viewBox="0 0 1024 1024"><path fill="currentColor" d="M192 128h640a64 64 0 0 1 64 64v640a64 64 0 0 1-64 64H192a64 64 0 0 1-64-64V192a64 64 0 0 1 64-64zm64 128v64h384v-64H256zm0 160v64h384v-64H256zm0 160v64h256v-64H256z"></path></svg></el-icon>
+                            <span>合规监督与审计日志</span>
+                        </el-menu-item>
+                    </el-menu>
+                </el-aside>
+
+                <el-main class="main-content">
+                    
+                    <!-- 1. 准入资质审核列表页 -->
+                    <div v-if="currentView === 'audit-list'" class="page-card">
+                        <div class="page-header">
+                            <span class="page-title">待审核准入供应商申请</span>
+                        </div>
+
+                        <!-- 筛选 -->
+                        <el-form :inline="true" :model="searchForm" style="margin-bottom: 10px;">
+                            <el-form-item label="供应商名称">
+                                <el-input v-model="searchForm.name" placeholder="输入名称或税号" clearable></el-input>
+                            </el-form-item>
+                            <el-form-item label="状态">
+                                <el-select v-model="searchForm.status" placeholder="全部状态" style="width: 140px;" clearable>
+                                    <el-option label="待审核" value="待审核"></el-option>
+                                    <el-option label="正常 / 合作中" value="正常/合作中"></el-option>
+                                    <el-option label="待修改 (已驳回)" value="待修改"></el-option>
+                                </el-select>
+                            </el-form-item>
+                            <el-form-item>
+                                <el-button type="primary">筛选</el-button>
+                            </el-form-item>
+                        </el-form>
+
+                        <!-- 表格 -->
+                        <el-table :data="auditSuppliers" border style="width: 100%">
+                            <el-table-column prop="name" label="供应商名称" min-width="180"></el-table-column>
+                            <el-table-column prop="taxId" label="统一社会信用代码/税号" width="190"></el-table-column>
+                            <el-table-column prop="type" label="供应商类型" width="130"></el-table-column>
+                            <el-table-column prop="submitter" label="提交业务员" width="130"></el-table-column>
+                            <el-table-column prop="submitTime" label="提交时间" width="160"></el-table-column>
+                            <el-table-column prop="status" label="当前状态" width="120">
+                                <template #default="scope">
+                                    <el-tag :type="getStatusTagType(scope.row.status)">{{ scope.row.status }}</el-tag>
+                                </template>
+                            </el-table-column>
+                            <el-table-column label="合规审核" width="160" fixed="right">
+                                <template #default="scope">
+                                    <el-button v-if="scope.row.status === '待审核'" size="small" type="success" @click="openAuditPage(scope.row)">进行准入审核</el-button>
+                                    <el-button v-else size="small" type="primary" link @click="openAuditPage(scope.row)">查看资质档案</el-button>
+                                </template>
+                            </el-table-column>
+                        </el-table>
+                    </div>
+
+                    <!-- 2. 执行资质审核 (跳转页) -->
+                    <div v-if="currentView === 'audit-detail'" class="page-card">
+                        <div class="page-header">
+                            <span class="page-title">供应商准入合规审核 - {{ currentSupplier.name }}</span>
+                            <el-button @click="navigateTo('audit-list')">返回待审列表</el-button>
+                        </div>
+
+                        <div class="detail-section">
+                            <h4>企业提交基本信息校验</h4>
+                            <el-descriptions :column="2" border>
+                                <el-descriptions-item label="企业全称">{{ currentSupplier.name }}</el-descriptions-item>
+                                <el-descriptions-item label="统一社会信用代码/税号">{{ currentSupplier.taxId }}</el-descriptions-item>
+                                <el-descriptions-item label="企业类型">{{ currentSupplier.type }}</el-descriptions-item>
+                                <el-descriptions-item label="联系人/电话">{{ currentSupplier.contact }} ({{ currentSupplier.phone }})</el-descriptions-item>
+                                <el-descriptions-item label="提交业务员">{{ currentSupplier.submitter || 'Yangwei' }}</el-descriptions-item>
+                                <el-descriptions-item label="提交时间">{{ currentSupplier.submitTime || '2026-09-16 10:00:00' }}</el-descriptions-item>
+                                <el-descriptions-item label="营业执照原件" :span="2">
+                                    <el-space>
+                                        <el-tag type="success">【文件已核验】营业执照正本_扫描件.pdf</el-tag>
+                                        <el-button type="primary" link>预览文件</el-button>
+                                    </el-space>
+                                </el-descriptions-item>
+                            </el-descriptions>
+                        </div>
+
+                        <!-- 仅待审核状态显示审批表单 -->
+                        <div v-if="currentSupplier.status === '待审核'" class="audit-box">
+                            <h4 style="margin-top: 0; color: #e6a23c;">审计员签署审核结论</h4>
+                            <el-form label-width="120px">
+                                <el-form-item label="审核结果" required>
+                                    <el-radio-group v-model="auditForm.result">
+                                        <el-radio value="pass">审核通过 (准入为正式合作供应商)</el-radio>
+                                        <el-radio value="reject">审核驳回 (退回给业务员修正)</el-radio>
+                                    </el-radio-group>
+                                </el-form-item>
+                                <el-form-item label="审计驳回/审批意见" :required="auditForm.result === 'reject'">
+                                    <el-input type="textarea" v-model="auditForm.comment" rows="3" placeholder="若选择驳回，请务必填写具体的退回修改原因（如：营业执照不清晰/税号不匹配）..."></el-input>
+                                </el-form-item>
+                                <el-form-item>
+                                    <el-button type="success" @click="submitAuditDecision">提交审核签署结果</el-button>
+                                    <el-button @click="navigateTo('audit-list')">取消</el-button>
+                                </el-form-item>
+                            </el-form>
+                        </div>
+                    </div>
+
+                    <!-- 3. 状态变更终审决策列表页 -->
+                    <div v-if="currentView === 'status-decision-list'" class="page-card">
+                        <div class="page-header">
+                            <span class="page-title">供应商停用 / 淘汰终审决策</span>
+                        </div>
+
+                        <el-table :data="statusRequests" border style="width: 100%">
+                            <el-table-column prop="supplierName" label="目标供应商" min-width="180"></el-table-column>
+                            <el-table-column prop="currentStatus" label="当前状态" width="130">
+                                <template #default="scope">
+                                    <el-tag :type="getStatusTagType(scope.row.currentStatus)">{{ scope.row.currentStatus }}</el-tag>
+                                </template>
+                            </el-table-column>
+                            <el-table-column prop="targetStatus" label="申请变更目标" width="130">
+                                <template #default="scope">
+                                    <el-tag type="danger">{{ scope.row.targetStatus }}</el-tag>
+                                </template>
+                            </el-table-column>
+                            <el-table-column prop="applicant" label="申请业务员" width="120"></el-table-column>
+                            <el-table-column prop="reason" label="业务员申请原因"></el-table-column>
+                            <el-table-column label="终审决策" width="180" fixed="right">
+                                <template #default="scope">
+                                    <el-button size="small" type="danger" @click="handleStatusDecision(scope.row, true)">批准变更</el-button>
+                                    <el-button size="small" @click="handleStatusDecision(scope.row, false)">驳回申请</el-button>
+                                </template>
+                            </el-table-column>
+                        </el-table>
+
+                        <div style="margin-top: 30px;">
+                            <span class="page-title" style="font-size: 16px;">已停用供应商决策恢复</span>
+                            <el-table :data="stoppedSuppliers" border style="width: 100%; margin-top: 15px;">
+                                <el-table-column prop="name" label="供应商名称" min-width="180"></el-table-column>
+                                <el-table-column prop="taxId" label="税号" width="190"></el-table-column>
+                                <el-table-column prop="status" label="当前状态" width="110">
+                                    <template #default>
+                                        <el-tag type="info">停用</el-tag>
+                                    </template>
+                                </el-table-column>
+                                <el-table-column label="恢复操作" width="180">
+                                    <template #default="scope">
+                                        <el-button size="small" type="success" @click="reEnableSupplier(scope.row)">恢复为正常合作</el-button>
+                                    </template>
+                                </el-table-column>
+                            </el-table>
+                        </div>
+                    </div>
+
+                    <!-- 4. 绩效评价复核列表页 -->
+                    <div v-if="currentView === 'perf-review-list'" class="page-card">
+                        <div class="page-header">
+                            <span class="page-title">业务员季度绩效打分复核</span>
+                        </div>
+
+                        <el-table :data="perfReviews" border style="width: 100%">
+                            <el-table-column prop="supplierName" label="供应商名称"></el-table-column>
+                            <el-table-column prop="period" label="考评周期" width="120"></el-table-column>
+                            <el-table-column prop="scoresDetail" label="5维度计算分值 (质量30% | 交付25% | 价格20% | 服务15% | 合规10%)"></el-table-column>
+                            <el-table-column prop="totalScore" label="系统算分" width="100"></el-table-column>
+                            <el-table-column prop="grade" label="自动评级" width="100">
+                                <template #default="scope">
+                                    <el-tag type="success">{{ scope.row.grade }} 级</el-tag>
+                                </template>
+                            </el-table-column>
+                            <el-table-column prop="status" label="复核状态" width="130">
+                                <template #default="scope">
+                                    <el-tag :type="scope.row.status === '待审计员复核' ? 'warning' : 'success'">{{ scope.row.status }}</el-tag>
+                                </template>
+                            </el-table-column>
+                            <el-table-column label="复核操作" width="180" fixed="right">
+                                <template #default="scope">
+                                    <template v-if="scope.row.status === '待审计员复核'">
+                                        <el-button size="small" type="success" @click="reviewPerf(scope.row, '通过')">复核通过</el-button>
+                                        <el-button size="small" type="danger" @click="reviewPerf(scope.row, '驳回')">驳回打分</el-button>
+                                    </template>
+                                    <span v-else style="color: #909399; font-size: 13px;">已复核完成</span>
+                                </template>
+                            </el-table-column>
+                        </el-table>
+                    </div>
+
+                    <!-- 5. 全量合规监督与审计日志页 -->
+                    <div v-if="currentView === 'log-list'" class="page-card">
+                        <div class="page-header">
+                            <span class="page-title">系统全量合规审计与过程日志 (审计追踪)</span>
+                        </div>
+
+                        <el-form :inline="true" style="margin-bottom: 10px;">
+                            <el-form-item label="目标供应商">
+                                <el-input v-model="logFilterSupplier" placeholder="搜索供应商..." clearable></el-input>
+                            </el-form-item>
+                            <el-form-item label="操作类型">
+                                <el-select v-model="logFilterType" placeholder="全部类型" style="width: 160px;" clearable>
+                                    <el-option label="资质审核通过" value="资质审核通过"></el-option>
+                                    <el-option label="资质审核驳回" value="资质审核驳回"></el-option>
+                                    <el-option label="批准停用" value="批准停用"></el-option>
+                                    <el-option label="批准淘汰" value="批准淘汰"></el-option>
+                                    <el-option label="恢复正常合作" value="恢复正常合作"></el-option>
+                                    <el-option label="绩效复核通过" value="绩效复核通过"></el-option>
+                                </el-select>
+                            </el-form-item>
+                        </el-form>
+
+                        <el-table :data="filteredLogs" border stripe style="width: 100%">
+                            <el-table-column prop="time" label="操作时间" width="170"></el-table-column>
+                            <el-table-column prop="supplierName" label="目标供应商" min-width="180"></el-table-column>
+                            <el-table-column prop="operator" label="操作人" width="150"></el-table-column>
+                            <el-table-column prop="type" label="操作类型" width="140"></el-table-column>
+                            <el-table-column prop="oldStatus" label="原状态" width="120"></el-table-column>
+                            <el-table-column prop="newStatus" label="新状态" width="120"></el-table-column>
+                            <el-table-column prop="comment" label="审计意见 / 批注说明"></el-table-column>
+                        </el-table>
+                    </div>
+
+                </el-main>
+            </el-container>
+        </el-container>
+    </div>
+
+    <script>
+        const { createApp, ref, reactive, computed } = Vue;
+
+        const app = createApp({
+            setup() {
+                const currentView = ref('audit-list');
+                const activeMenu = ref('audit-list');
+
+                const searchForm = reactive({ name: '', status: '' });
+                const logFilterSupplier = ref('');
+                const logFilterType = ref('');
+
+                // 全局审计日志记录
+                const globalLogs = ref([
+                    { time: '2026-09-16 09:30:00', supplierName: '上海华联部件有限公司', operator: 'Yangwei (业务员)', type: '提交准入', oldStatus: '草稿/待提交', newStatus: '待审核', comment: '业务员提交资质送审' },
+                    { time: '2026-09-16 10:15:20', supplierName: '深圳迅捷物流有限公司', operator: 'Auditor_01 (审计员)', type: '资质审核通过', oldStatus: '待审核', newStatus: '正常/合作中', comment: '营业执照核验无误，批准准入' }
+                ]);
+
+                const recordLog = (supplierName, operator, type, oldStatus, newStatus, comment) => {
+                    const now = new Date();
+                    const timeStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}`;
+                    globalLogs.value.unshift({ time: timeStr, supplierName, operator, type, oldStatus, newStatus, comment });
+                };
+
+                const filteredLogs = computed(() => {
+                    return globalLogs.value.filter(l => {
+                        const matchSupplier = !logFilterSupplier.value || l.supplierName.includes(logFilterSupplier.value);
+                        const matchType = !logFilterType.value || l.type === logFilterType.value;
+                        return matchSupplier && matchType;
+                    });
+                });
+
+                // 准入审核列表数据
+                const auditSuppliers = ref([
+                    { name: '北京智造科技有限公司', taxId: '91110108MA01982X', type: '生产制造业', contact: '王业务', phone: '13800138000', submitter: 'Yangwei', submitTime: '2026-09-16 09:20:00', status: '待审核' },
+                    { name: '深圳迅捷物流有限公司', taxId: '914403003009821Z', type: '服务外包商', contact: '张总', phone: '13700009999', submitter: 'Yangwei', submitTime: '2026-09-15 14:00:00', status: '正常/合作中' },
+                    { name: '上海华联部件有限公司', taxId: '913100006782103Y', type: '生产制造业', contact: '李经理', phone: '13911112222', submitter: 'Yangwei', submitTime: '2026-09-14 11:00:00', status: '待修改' }
+                ]);
+
+                // 待决策的状态变更申请 (业务员发起的停用/淘汰申请)
+                const statusRequests = ref([
+                    { supplierName: '广州宏达电子有限公司', currentStatus: '正常/合作中', targetStatus: '停用', applicant: 'Yangwei', reason: '供货质量连续两次抽检不合格，申请暂停合作' }
+                ]);
+
+                // 已停用供应商列表
+                const stoppedSuppliers = ref([
+                    { name: '天津重工机械厂', taxId: '911200001092831A', status: '停用' }
+                ]);
+
+                // 待复核绩效列表
+                const perfReviews = ref([
+                    { supplierName: '深圳迅捷物流有限公司', period: '2026年 Q3', scoresDetail: '质量: 90 | 交付: 85 | 价格: 80 | 服务: 90 | 合规: 95', totalScore: 87.25, grade: 'B', status: '待审计员复核' }
+                ]);
+
+                const currentSupplier = ref({});
+                const auditForm = reactive({ result: 'pass', comment: '' });
+
+                const navigateTo = (view) => { currentView.value = view; };
+                const handleMenuSelect = (idx) => { activeMenu.value = idx; currentView.value = idx; };
+
+                // 打开准入审核详情
+                const openAuditPage = (row) => {
+                    currentSupplier.value = { ...row };
+                    auditForm.result = 'pass';
+                    auditForm.comment = '';
+                    navigateTo('audit-detail');
+                };
+
+                // 提交审核决策
+                const submitAuditDecision = () => {
+                    if (auditForm.result === 'reject' && !auditForm.comment) {
+                        ElementPlus.ElMessage.error('选择驳回时，必须填写具体的审核退回意见说明');
+                        return;
+                    }
+                    const idx = auditSuppliers.value.findIndex(s => s.taxId === currentSupplier.value.taxId);
+                    const oldSt = currentSupplier.value.status;
+                    const newSt = auditForm.result === 'pass' ? '正常/合作中' : '待修改';
+
+                    if (idx !== -1) {
+                        auditSuppliers.value[idx].status = newSt;
+                    }
+
+                    const actionType = auditForm.result === 'pass' ? '资质审核通过' : '资质审核驳回';
+                    recordLog(currentSupplier.value.name, 'Auditor_01 (审计员)', actionType, oldSt, newSt, auditForm.comment || '资质校验合规，准予入驻');
+
+                    ElementPlus.ElMessage.success(auditForm.result === 'pass' ? '审核通过，已加入合格供应商库' : '已退回给业务员修改');
+                    navigateTo('audit-list');
+                };
+
+                // 处理状态变更申请 (批准/驳回)
+                const handleStatusDecision = (row, isApproved) => {
+                    const oldSt = row.currentStatus;
+                    const newSt = isApproved ? row.targetStatus : row.currentStatus;
+                    
+                    if (isApproved) {
+                        statusRequests.value = statusRequests.value.filter(r => r.supplierName !== row.supplierName);
+                        if (row.targetStatus === '停用') {
+                            stoppedSuppliers.value.push({ name: row.supplierName, taxId: '914401008892110M', status: '停用' });
+                        }
+                    } else {
+                        statusRequests.value = statusRequests.value.filter(r => r.supplierName !== row.supplierName);
+                    }
+
+                    const actionType = isApproved ? `批准${row.targetStatus}` : `驳回${row.targetStatus}申请`;
+                    recordLog(row.supplierName, 'Auditor_01 (审计员)', actionType, oldSt, newSt, isApproved ? `同意业务员申请: ${row.reason}` : '驳回业务员申请，维持正常合作');
+
+                    ElementPlus.ElMessage.success(isApproved ? `已终审批准变更状态为：${row.targetStatus}` : '已驳回变更申请');
+                };
+
+                // 恢复停用的供应商
+                const reEnableSupplier = (row) => {
+                    stoppedSuppliers.value = stoppedSuppliers.value.filter(s => s.name !== row.name);
+                    recordLog(row.name, 'Auditor_01 (审计员)', '恢复正常合作', '停用', '正常/合作中', '审计员决策解除停用限制，恢复正常合作状态');
+                    ElementPlus.ElMessage.success(`已恢复【${row.name}】为正常合作状态`);
+                };
+
+                // 绩效复核
+                const reviewPerf = (row, result) => {
+                    row.status = result === '通过' ? '已复核通过' : '已驳回重打分';
+                    recordLog(row.supplierName, 'Auditor_01 (审计员)', `绩效复核${result}`, '待审计员复核', row.status, `复核结论: ${result}该季度评分 (${row.totalScore}分)` );
+                    ElementPlus.ElMessage.success(`绩效打分复核结论: ${result}`);
+                };
+
+                const getStatusTagType = (st) => {
+                    if (st === '待审核') return 'warning';
+                    if (st === '正常/合作中') return 'success';
+                    if (st === '待修改') return 'danger';
+                    if (st === '停用') return 'info';
+                    return 'danger';
+                };
+
+                return {
+                    currentView, activeMenu, searchForm, logFilterSupplier, logFilterType, filteredLogs,
+                    auditSuppliers, statusRequests, stoppedSuppliers, perfReviews, currentSupplier, auditForm,
+                    navigateTo, handleMenuSelect, openAuditPage, submitAuditDecision, handleStatusDecision,
+                    reEnableSupplier, reviewPerf, getStatusTagType
+                };
+            }
+        });
+
+        app.use(ElementPlus);
+        app.mount('#app');
+    </script>
+</body>
+</html>

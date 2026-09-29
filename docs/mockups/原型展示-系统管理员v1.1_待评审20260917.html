@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>供应商管理系统 - 系统管理员控制台</title>
+    <!-- 引入 Element Plus 样式 -->
+    <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css" />
+    <!-- 引入 Vue 3 与 Element Plus -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://unpkg.com/element-plus"></script>
+    <style>
+        * { box-sizing: border-box; }
+        html, body, #app {
+            margin: 0; padding: 0; height: 100%; width: 100%;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background-color: #f5f7fa; overflow: hidden;
+        }
+        /* 主布局：垂直方向，顶栏固定在上 */
+        .layout-container { height: 100vh; display: flex; flex-direction: column; }
+        .header-bar {
+            height: 60px; background-color: #1f2d3d; color: #fff;
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 0 20px; flex-shrink: 0; z-index: 100; box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .logo { font-size: 18px; font-weight: bold; letter-spacing: 1px; }
+        .user-info { font-size: 14px; color: #e0e6ed; display: flex; align-items: center; }
+
+        /* 主体区域：横向排列侧边栏与内容区 */
+        .body-container { flex: 1; display: flex; overflow: hidden; }
+        .aside-menu { background-color: #304156; color: #fff; height: 100%; overflow-y: auto; }
+        .el-menu { border-right: none; }
+
+        /* 内容展示区域：独立滚动 */
+        .main-content { flex: 1; padding: 20px; background-color: #f0f2f5; overflow-y: auto; height: 100%; }
+        .page-card {
+            background: #fff; padding: 24px; border-radius: 4px;
+            box-shadow: 0 1px 4px rgba(0,21,41,.08); min-height: calc(100vh - 100px);
+        }
+        .form-container { max-width: 600px; margin-top: 20px; }
+        .page-header {
+            display: flex; align-items: center; justify-content: space-between;
+            border-bottom: 1px solid #ebeef5; padding-bottom: 16px; margin-bottom: 20px;
+        }
+        .page-title { font-size: 18px; font-weight: bold; color: #303133; }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <el-container class="layout-container" direction="vertical">
+            <!-- 顶栏导航 -->
+            <el-header height="60px" class="header-bar">
+                <div class="logo">SRM 供应商管理系统 | 管理后台</div>
+                <div class="user-info">
+                    <el-tag type="danger" size="small" style="margin-right: 10px;">系统管理员 (Admin)</el-tag>
+                    <span>欢迎您，超级管理员</span>
+                </div>
+            </el-header>
+
+            <!-- 主体内容与侧边栏容器 -->
+            <el-container class="body-container" direction="horizontal">
+                <!-- 侧边栏菜单 -->
+                <el-aside width="220px" class="aside-menu">
+                    <el-menu
+                        :default-active="activeMenu"
+                        background-color="#304156"
+                        text-color="#bfcbd9"
+                        active-text-color="#409EFF"
+                        @select="handleMenuSelect">
+                        <el-menu-item index="user-list">
+                            <el-icon><svg viewBox="0 0 1024 1024"><path fill="currentColor" d="M512 512a192 192 0 1 0 0-384 192 192 0 0 0 0 384zm0 64c-183.424 0-512 92.16-512 276.48V928h1024v-75.52C1024 668.16 695.424 576 512 576z"></path></svg></el-icon>
+                            <span>用户账号管理</span>
+                        </el-menu-item>
+                        <el-menu-item index="role-list">
+                            <el-icon><svg viewBox="0 0 1024 1024"><path fill="currentColor" d="M512 128a384 384 0 1 0 0 768 384 384 0 0 0 0-768z"></path></svg></el-icon>
+                            <span>角色与权限维护</span>
+                        </el-menu-item>
+                        <!-- 日志功能菜单 -->
+                        <el-menu-item index="log-list">
+                            <el-icon><svg viewBox="0 0 1024 1024"><path fill="currentColor" d="M192 128h640a64 64 0 0 1 64 64v640a64 64 0 0 1-64 64H192a64 64 0 0 1-64-64V192a64 64 0 0 1 64-64zm64 128v64h384v-64H256zm0 160v64h384v-64H256zm0 160v64h256v-64H256z"></path></svg></el-icon>
+                            <span>系统操作与安全日志</span>
+                        </el-menu-item>
+                    </el-menu>
+                </el-aside>
+
+                <!-- 主内容展示区域 -->
+                <el-main class="main-content">
+                    
+                    <!-- 1. 用户列表页面 (user-list) -->
+                    <div v-if="currentView === 'user-list'" class="page-card">
+                        <div class="page-header">
+                            <span class="page-title">内部用户账号管理</span>
+                            <el-button type="primary" @click="navigateTo('user-add')">
+                                + 新增用户账号
+                            </el-button>
+                        </div>
+
+                        <!-- 搜索过滤 -->
+                        <el-form :inline="true" :model="searchForm" style="margin-bottom: 10px;">
+                            <el-form-item label="姓名/工号">
+                                <el-input v-model="searchForm.keyword" placeholder="请输入姓名或工号" clearable></el-input>
+                            </el-form-item>
+                            <el-form-item label="状态">
+                                <el-select v-model="searchForm.status" placeholder="全部状态" style="width: 130px;" clearable>
+                                    <el-option label="已启用" value="启用"></el-option>
+                                    <el-option label="已停用" value="停用"></el-option>
+                                </el-select>
+                            </el-form-item>
+                            <el-form-item>
+                                <el-button type="primary">查询</el-button>
+                            </el-form-item>
+                        </el-form>
+
+                        <!-- 表格 -->
+                        <el-table :data="users" border style="width: 100%">
+                            <el-table-column prop="account" label="工号/账号" width="120"></el-table-column>
+                            <el-table-column prop="name" label="姓名" width="120"></el-table-column>
+                            <el-table-column prop="email" label="邮箱"></el-table-column>
+                            <el-table-column prop="role" label="分配角色" width="160">
+                                <template #default="scope">
+                                    <el-tag>{{ scope.row.role }}</el-tag>
+                                </template>
+                            </el-table-column>
+                            <el-table-column prop="status" label="状态" width="100">
+                                <template #default="scope">
+                                    <el-tag :type="scope.row.status === '启用' ? 'success' : 'danger'">
+                                        {{ scope.row.status }}
+                                    </el-tag>
+                                </template>
+                            </el-table-column>
+                            <el-table-column label="操作" width="220">
+                                <template #default="scope">
+                                    <el-button size="small" type="primary" link @click="editUser(scope.row)">编辑角色</el-button>
+                                    <el-button 
+                                        size="small" 
+                                        :type="scope.row.status === '启用' ? 'danger' : 'success'" 
+                                        link 
+                                        @click="toggleStatus(scope.row)">
+                                        {{ scope.row.status === '启用' ? '停用账号' : '启用账号' }}
+                                    </el-button>
+                                </template>
+                            </el-table-column>
+                        </el-table>
+                    </div>
+
+                    <!-- 2. 新增用户页面 (user-add) -->
+                    <div v-if="currentView === 'user-add'" class="page-card">
+                        <div class="page-header">
+                            <span class="page-title">新建内部用户</span>
+                            <el-button @click="navigateTo('user-list')">返回用户列表</el-button>
+                        </div>
+                        <div class="form-container">
+                            <el-form :model="newUser" label-width="100px">
+                                <el-form-item label="登录账号" required>
+                                    <el-input v-model="newUser.account" placeholder="请输入员工工号或账号"></el-input>
+                                </el-form-item>
+                                <el-form-item label="真实姓名" required>
+                                    <el-input v-model="newUser.name" placeholder="请输入姓名"></el-input>
+                                </el-form-item>
+                                <el-form-item label="工作邮箱" required>
+                                    <el-input v-model="newUser.email" placeholder="例如: user@company.com"></el-input>
+                                </el-form-item>
+                                <el-form-item label="分配角色" required>
+                                    <el-select v-model="newUser.role" placeholder="请选择角色" style="width: 100%;">
+                                        <el-option label="业务员 (Staff)" value="业务员 (Staff)"></el-option>
+                                        <el-option label="审计员 (Auditor)" value="审计员 (Auditor)"></el-option>
+                                        <el-option label="系统管理员 (Admin)" value="系统管理员 (Admin)"></el-option>
+                                    </el-select>
+                                </el-form-item>
+                                <el-form-item>
+                                    <el-button type="primary" @click="saveUser">确认创建</el-button>
+                                    <el-button @click="navigateTo('user-list')">取消</el-button>
+                                </el-form-item>
+                            </el-form>
+                        </div>
+                    </div>
+
+                    <!-- 3. 编辑用户页面 (user-edit) -->
+                    <div v-if="currentView === 'user-edit'" class="page-card">
+                        <div class="page-header">
+                            <span class="page-title">编辑用户角色与权限 - {{ currentUser.name }}</span>
+                            <el-button @click="navigateTo('user-list')">返回用户列表</el-button>
+                        </div>
+                        <div class="form-container">
+                            <el-form :model="currentUser" label-width="100px">
+                                <el-form-item label="登录账号">
+                                    <el-input v-model="currentUser.account" disabled></el-input>
+                                </el-form-item>
+                                <el-form-item label="真实姓名">
+                                    <el-input v-model="currentUser.name"></el-input>
+                                </el-form-item>
+                                <el-form-item label="调整角色">
+                                    <el-select v-model="currentUser.role" style="width: 100%;">
+                                        <el-option label="业务员 (Staff)" value="业务员 (Staff)"></el-option>
+                                        <el-option label="审计员 (Auditor)" value="审计员 (Auditor)"></el-option>
+                                        <el-option label="系统管理员 (Admin)" value="系统管理员 (Admin)"></el-option>
+                                    </el-select>
+                                </el-form-item>
+                                <el-form-item>
+                                    <el-button type="primary" @click="updateUser">保存修改</el-button>
+                                    <el-button @click="navigateTo('user-list')">取消</el-button>
+                                </el-form-item>
+                            </el-form>
+                        </div>
+                    </div>
+
+                    <!-- 4. 角色权限列表页面 (role-list) -->
+                    <div v-if="currentView === 'role-list'" class="page-card">
+                        <div class="page-header">
+                            <span class="page-title">系统基础角色与权限配置</span>
+                        </div>
+                        <el-table :data="roles" border style="width: 100%">
+                            <el-table-column prop="roleName" label="角色名称" width="180"></el-table-column>
+                            <el-table-column prop="description" label="角色职责与权限边界说明"></el-table-column>
+                            <el-table-column prop="userCount" label="关联用户数" width="130"></el-table-column>
+                        </el-table>
+                    </div>
+
+                    <!-- 5. 系统操作与安全日志页面 (log-list) -->
+                    <div v-if="currentView === 'log-list'" class="page-card">
+                        <div class="page-header">
+                            <span class="page-title">系统管理操作与权限审计日志</span>
+                        </div>
+
+                        <!-- 日志筛选 -->
+                        <el-form :inline="true" style="margin-bottom: 10px;">
+                            <el-form-item label="操作人">
+                                <el-input v-model="logFilterOperator" placeholder="搜索操作人..." clearable></el-input>
+                            </el-form-item>
+                            <el-form-item label="操作类型">
+                                <el-select v-model="logFilterType" placeholder="全部类型" style="width: 160px;" clearable>
+                                    <el-option label="新增用户" value="新增用户"></el-option>
+                                    <el-option label="调整用户角色" value="调整用户角色"></el-option>
+                                    <el-option label="停用账号" value="停用账号"></el-option>
+                                    <el-option label="启用账号" value="启用账号"></el-option>
+                                </el-select>
+                            </el-form-item>
+                        </el-form>
+
+                        <!-- 日志表格 -->
+                        <el-table :data="filteredLogs" border stripe style="width: 100%">
+                            <el-table-column prop="time" label="操作时间" width="170"></el-table-column>
+                            <el-table-column prop="operator" label="操作人" width="150"></el-table-column>
+                            <el-table-column prop="type" label="操作类型" width="140">
+                                <template #default="scope">
+                                    <el-tag size="small" :type="getLogTagType(scope.row.type)">{{ scope.row.type }}</el-tag>
+                                </template>
+                            </el-table-column>
+                            <el-table-column prop="target" label="目标账号/对象" width="160"></el-table-column>
+                            <el-table-column prop="detail" label="详细变动记录与参数说明"></el-table-column>
+                        </el-table>
+                    </div>
+
+                </el-main>
+            </el-container>
+        </el-container>
+    </div>
+
+    <script>
+        const { createApp, ref, computed } = Vue;
+
+        const app = createApp({
+            setup() {
+                // 页面路由状态
+                const currentView = ref('user-list');
+                const activeMenu = ref('user-list');
+
+                // 搜索表单
+                const searchForm = ref({ keyword: '', status: '' });
+
+                // 日志检索字段
+                const logFilterOperator = ref('');
+                const logFilterType = ref('');
+
+                // 系统管理操作日志列表
+                const globalLogs = ref([
+                    {
+                        time: '2026-09-16 08:30:15', operator: '超级管理员 (Admin)', type: '新增用户', target: 'EMP001 (张三)', detail: '成功创建业务员账号，分配角色：业务员 (Staff)'
+                    },
+                    {
+                        time: '2026-09-16 08:32:00', operator: '超级管理员 (Admin)', type: '新增用户', target: 'EMP002 (李四)', detail: '成功创建审计员账号，分配角色：审计员 (Auditor)'
+                    },
+                    {
+                        time: '2026-09-16 09:10:45', operator: '超级管理员 (Admin)', type: '停用账号', target: 'EMP003 (王五)', detail: '将账号状态由【启用】变更为【停用】'
+                    }
+                ]);
+
+                // 辅助函数：实时记录管理员操作日志
+                const recordLog = (type, target, detail) => {
+                    const now = new Date();
+                    const timeStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}`;
+                    globalLogs.value.unshift({
+                        time: timeStr,
+                        operator: '超级管理员 (Admin)',
+                        type,
+                        target,
+                        detail
+                    });
+                };
+
+                // 日志计算属性过滤
+                const filteredLogs = computed(() => {
+                    return globalLogs.value.filter(l => {
+                        const matchOperator = !logFilterOperator.value || l.operator.includes(logFilterOperator.value);
+                        const matchType = !logFilterType.value || l.type === logFilterType.value;
+                        return matchOperator && matchType;
+                    });
+                });
+
+                // 模拟数据：内部用户
+                const users = ref([
+                    { account: 'EMP001', name: '张三', email: 'zhangsan@company.com', role: '业务员 (Staff)', status: '启用' },
+                    { account: 'EMP002', name: '李四', email: 'lisi@company.com', role: '审计员 (Auditor)', status: '启用' },
+                    { account: 'EMP003', name: '王五', email: 'wangwu@company.com', role: '业务员 (Staff)', status: '停用' }
+                ]);
+
+                // 模拟数据：角色与职责矩阵
+                const roles = ref([
+                    { roleName: '系统管理员 (Admin)', description: '负责创建/启停内部账号、分配角色，原则上不参与采购业务与审批。', userCount: 1 },
+                    { roleName: '业务员 (Staff)', description: '负责新增草稿档案、维护资质、提交准入、日常绩效打分及提交停用/淘汰申请。', userCount: 2 },
+                    { roleName: '审计员 (Auditor)', description: '负责准入合规审核、把关资质真实性、复核绩效及做停用/淘汰终审决策。', userCount: 1 }
+                ]);
+
+                // 新增用户表单
+                const newUser = ref({ account: '', name: '', email: '', role: '业务员 (Staff)' });
+                // 当前编辑的用户
+                const currentUser = ref({});
+
+                // 页面跳转逻辑
+                const navigateTo = (viewName) => {
+                    currentView.value = viewName;
+                };
+
+                // 侧边栏选择
+                const handleMenuSelect = (index) => {
+                    activeMenu.value = index;
+                    currentView.value = index;
+                };
+
+                // 触发编辑跳转
+                const editUser = (userRow) => {
+                    currentUser.value = { ...userRow };
+                    navigateTo('user-edit');
+                };
+
+                // 保存新增用户（并生成日志）
+                const saveUser = () => {
+                    if (!newUser.value.account || !newUser.value.name) {
+                        ElementPlus.ElMessage.error('请填写完整必填信息');
+                        return;
+                    }
+                    users.value.push({
+                        ...newUser.value,
+                        status: '启用'
+                    });
+                    
+                    // 动态写入日志
+                    recordLog('新增用户', `${newUser.value.account} (${newUser.value.name})`, `分配角色: ${newUser.value.role}，账号已初始化启用`);
+
+                    ElementPlus.ElMessage.success('账号创建成功，操作已留痕日志');
+                    newUser.value = { account: '', name: '', email: '', role: '业务员 (Staff)' };
+                    navigateTo('user-list');
+                };
+
+                // 保存编辑修改（并生成日志）
+                const updateUser = () => {
+                    const idx = users.value.findIndex(u => u.account === currentUser.value.account);
+                    if (idx !== -1) {
+                        const oldRole = users.value[idx].role;
+                        users.value[idx] = { ...currentUser.value };
+
+                        // 动态写入日志
+                        recordLog('调整用户角色', `${currentUser.value.account} (${currentUser.value.name})`, `角色由【${oldRole}】变更修改为【${currentUser.value.role}】`);
+                    }
+                    ElementPlus.ElMessage.success('用户配置更新成功，日志已记载');
+                    navigateTo('user-list');
+                };
+
+                // 切换启用/停用状态（并生成日志）
+                const toggleStatus = (userRow) => {
+                    const oldSt = userRow.status;
+                    userRow.status = userRow.status === '启用' ? '停用' : '启用';
+
+                    // 动态写入日志
+                    const actionType = userRow.status === '启用' ? '启用账号' : '停用账号';
+                    recordLog(actionType, `${userRow.account} (${userRow.name})`, `账号状态从【${oldSt}】变更为【${userRow.status}】`);
+
+                    ElementPlus.ElMessage.info(`已将账号状态更新为：${userRow.status}`);
+                };
+
+                // 日志标签颜色样式
+                const getLogTagType = (type) => {
+                    if (type === '新增用户') return 'primary';
+                    if (type === '调整用户角色') return 'warning';
+                    if (type === '停用账号') return 'danger';
+                    return 'success';
+                };
+
+                return {
+                    currentView,
+                    activeMenu,
+                    searchForm,
+                    logFilterOperator,
+                    logFilterType,
+                    filteredLogs,
+                    users,
+                    roles,
+                    newUser,
+                    currentUser,
+                    navigateTo,
+                    handleMenuSelect,
+                    editUser,
+                    saveUser,
+                    updateUser,
+                    toggleStatus,
+                    getLogTagType
+                };
+            }
+        });
+
+        app.use(ElementPlus);
+        app.mount('#app');
+    </script>
+</body>
+</html>

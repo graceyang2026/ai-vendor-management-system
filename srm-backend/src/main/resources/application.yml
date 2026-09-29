@@ -7,7 +7,7 @@ spring:
     # 确保 ${DB_NAME} 这个数据库已经在 MySQL/KingbaseES 中 CREATE 了；凭据从 .env 读取，禁止硬编码
     url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:vendor_db}?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true&characterEncoding=UTF-8
     username: ${DB_USER:root}
-    password: ${DB_PASSWORD:}
+    password: ${DB_PASSWORD:123456}
     driver-class-name: com.mysql.cj.jdbc.Driver
   sql:
     init:
