@@ -73,6 +73,7 @@ INDEX(enabled)
 | created_at | DATETIME | 是 | CURRENT_TIMESTAMP | 创建时间 |
 | updated_at | DATETIME | 是 | CURRENT_TIMESTAMP | 更新时间 |
 | deleted | TINYINT(1) | 是 | 0 | 逻辑删除 |
+| tax_no_active | VARCHAR(50) | 否 | 生成列 | `IF(deleted = 0, tax_no, NULL)`，仅用于承载下方唯一索引，不对业务代码暴露 |
 
 ### status
 
@@ -85,10 +86,21 @@ SUSPENDED
 ELIMINATED
 ```
 
+### latest_performance_grade
+
+```text
+A
+B
+C
+D
+```
+
+> 取值与 `performance_evaluation.grade` 一致，见第 5 节。
+
 ### 索引
 
 ```text
-UNIQUE(tax_no)
+UNIQUE(tax_no_active)
 INDEX(name)
 INDEX(status)
 INDEX(created_by)
@@ -100,6 +112,11 @@ INDEX(status, deleted)
 ```text
 supplier.created_by → sys_user.id
 ```
+
+### 业务规则
+
+- `tax_no` 本身不建唯一索引，唯一性通过生成列 `tax_no_active`（`IF(deleted = 0, tax_no, NULL)`）+ `UNIQUE(tax_no_active)` 实现：MySQL 的 UNIQUE 索引允许多个 NULL 并存，逻辑删除（`deleted = 1`）的历史供应商不再占用这个税号，允许重新建档使用同一税号；未删除的供应商之间仍强制税号唯一。
+- 这是为了兼容 `DELETE /suppliers/{id}`（仅本人 `DRAFT` 逻辑删除）之后重新用同一税号建档的场景——如果直接对 `tax_no` 建普通 `UNIQUE` 索引，逻辑删除的旧记录会一直占用该税号，导致重新建档失败。
 
 ---
 
@@ -196,6 +213,15 @@ mock
 PENDING_REVIEW
 APPROVED
 RETURNED
+```
+
+### grade
+
+```text
+A
+B
+C
+D
 ```
 
 ### 索引
@@ -332,6 +358,8 @@ lifecycle_request.decided_by → sys_user.id
 
 记录关键业务操作。
 
+> **与 TDD 的对齐说明**：`docs/TDD.docx` 第 6 节 DFD 中把 `D2 StatusHistory`（状态历史表）与 `D5 AuditLog`（审计日志表）画成两个独立数据存储。本设计将两者合并为这一张 `audit_log` 表：`old_status`/`new_status` 字段承担 StatusHistory 的职责，不再单独建表。这是有意的架构简化（同一次状态变更既是"状态历史"也是"审计事件"，字段完全重合，拆两张表只会增加一次多余的写入和一致性维护成本），并非遗漏；后续再对照 TDD 原文时，不需要因为找不到 `status_history` 表而当成新问题。
+
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 |---|---|---|---|---|
 | id | BIGINT | 是 | - | 主键 |
@@ -354,6 +382,20 @@ PERFORMANCE_EVALUATION
 PERFORMANCE_EVALUATION_DRAFT
 LIFECYCLE_REQUEST
 ```
+
+### action
+
+```text
+SUBMIT
+AUDIT_APPROVE
+AUDIT_REJECT
+REVIEW_APPROVE
+REVIEW_REJECT
+DECISION_APPROVE
+DECISION_REJECT
+```
+
+> `entity_type = LIFECYCLE_REQUEST` 时，`DECISION_APPROVE`/`DECISION_REJECT` 统一表示停用/恢复/淘汰三种申请类型的决策，具体申请类型看关联的 `lifecycle_request.type`，不在 `action` 里再拆分成 `SUSPEND_APPROVE`/`RESUME_APPROVE`/`ELIMINATE_APPROVE` 等。
 
 ### result
 
@@ -436,12 +478,12 @@ supplier
 Qoder 建表时遵循以下规则：
 
 1. 所有主键使用 `BIGINT`
-2. 所有表增加 `created_at`、`updated_at`
+2. 所有表增加 `created_at`、`updated_at`；`audit_log` 是只插入不更新的表，例外只保留 `created_at`，不需要 `updated_at`。`updated_at` 的自动刷新通过 MyBatis-Plus 的 `@TableField(fill = FieldFill.INSERT_UPDATE)` + 全局 `MetaObjectHandler` 在应用层实现，不依赖数据库层 `ON UPDATE CURRENT_TIMESTAMP`（避免未来迁移 KingbaseES 时行为不一致）。
 3. 需要逻辑删除的表增加 `deleted`
 4. 状态字段使用 `VARCHAR`，不要使用 MySQL ENUM
-5. 外键关系按本文档处理
-6. `supplier.tax_no` 唯一
-7. `sys_user.username` 唯一
+5. 外键关系按本文档处理，但**不建物理 `FOREIGN KEY` 约束**——所有关联仅为逻辑关系，引用完整性由应用层（Service/Mapper）维护，不在 DDL 里写 `FOREIGN KEY`（物理外键会和逻辑删除语义打架，也不利于迁移 KingbaseES）。
+6. `supplier.tax_no` 的唯一性通过生成列 `tax_no_active`（`IF(deleted = 0, tax_no, NULL)`）+ `UNIQUE(tax_no_active)` 实现，逻辑删除的记录不占用税号；不要直接对 `tax_no` 建普通 `UNIQUE` 索引，见第 3 节业务规则。
+7. `sys_user.username` 唯一（当前无删除接口，暂用普通 `UNIQUE` 索引即可；若后续给用户增加删除功能，需按第 6 条同样的生成列思路改造）
 8. `performance_evaluation.fact_record`、`performance_evaluation_draft.fact_record` 使用 JSON
 9. 绩效分数字段使用 `DECIMAL(5,2)`
 10. `version` 用于乐观锁

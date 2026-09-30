@@ -298,6 +298,7 @@ interface PerformanceEvaluationResponse {
   created_by: number;
   created_by_name: string;
   created_at: string;
+  updated_at: string;
   reviewed_by?: number;
   reviewed_at?: string;
   review_comment?: string;
@@ -392,7 +393,7 @@ interface AuditLogResponse {
   operator_id: number;
   operator_name: string;
   operator_role: Role;
-  action: string;          // 如 SUBMIT / AUDIT_APPROVE / AUDIT_REJECT / SUSPEND_APPROVE ...
+  action: string;          // SUBMIT / AUDIT_APPROVE / AUDIT_REJECT / REVIEW_APPROVE / REVIEW_REJECT / DECISION_APPROVE / DECISION_REJECT，完整枚举见数据库设计文档第8节
   old_status?: string;
   new_status?: string;
   result: 'SUCCESS' | 'REJECTED';

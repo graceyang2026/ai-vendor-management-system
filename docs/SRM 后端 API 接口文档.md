@@ -1,5 +1,7 @@
 # SRM 后端 API 接口文档
 
+> **本文档已被 `docs/api-spec.md` 取代，仅作历史参考。** `.qoder/rules.md` 明确 `docs/api-spec.md` 是前后端唯一共同事实来源；本文档与 `api-spec.md` 有出入（字段缺失、规则说明不全等）时，一律以 `api-spec.md` 为准，不要反过来改 `api-spec.md` 去对齐本文档。
+
 > Base URL：`/api/v1`
 >
 > 除登录接口外，均需携带 `Authorization: Bearer <token>`。
@@ -640,6 +642,7 @@ Request 中不得出现：
   "status": "PENDING_REVIEW",
   "created_by": 1,
   "created_at": "2026-04-01T10:00:00",
+  "updated_at": "2026-04-01T10:00:00",
   "reviewed_by": null,
   "reviewed_at": null,
   "review_comment": null,
