@@ -36,7 +36,7 @@ com.srm.core
 
 > 逻辑删除字段 `deleted`、乐观锁字段 `version` 仅在需要的实体上出现。所有实体的 `id` 均为 `Long`，`@TableId(type = IdType.AUTO)`。时间字段统一 `LocalDateTime`（日期字段用 `LocalDate`）。
 
-### 2.1 `User`（表 `users`）
+### 2.1 `User`（表 `sys_user`）
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
@@ -49,7 +49,7 @@ com.srm.core
 | created_at | LocalDateTime | |
 | updated_at | LocalDateTime | |
 
-### 2.2 `Supplier`（表 `suppliers`）
+### 2.2 `Supplier`（表 `supplier`）
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
@@ -70,7 +70,7 @@ com.srm.core
 
 > `business_license_url`（api-spec.md 里 SupplierResponse 的字段）**不作为 Supplier 表的持久化列**，由 Service 组装 Response 时从该供应商最新一条 `doc_type=BUSINESS_LICENSE` 的 `Qualification` 中取 `file_url` 填入，避免数据冗余不同步。
 
-### 2.3 `Qualification`（表 `qualifications`）
+### 2.3 `Qualification`（表 `supplier_qualification`）
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
@@ -83,7 +83,7 @@ com.srm.core
 
 > `expired` 字段**不持久化**，Response 组装时用 `expiry_date.isBefore(LocalDate.now())` 实时计算。
 
-### 2.4 `PerformanceEvaluation`（表 `performance_evaluations`）
+### 2.4 `PerformanceEvaluation`（表 `performance_evaluation`）
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
@@ -112,7 +112,7 @@ com.srm.core
 
 > 命名提醒（踩坑点）：合规维度分数字段命名为 `scoreCompliance`，**不要**用单字母变量名 `c`/`C`，会跟评级字母 `C` 混淆，这是命名层面的强制要求，不是随意建议。
 
-### 2.5 `LifecycleRequest`（表 `lifecycle_requests`）
+### 2.5 `LifecycleRequest`（表 `lifecycle_request`）
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
@@ -127,7 +127,7 @@ com.srm.core
 | decided_at | LocalDateTime（可空） | |
 | decision_comment | String（可空） | |
 
-### 2.6 `AuditLog`（表 `audit_logs`，只插入不更新）
+### 2.6 `AuditLog`（表 `audit_log`，只插入不更新）
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
