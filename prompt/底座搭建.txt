@@ -1,0 +1,24 @@
+ ---
+
+  ▎ 依据 docs/SRM 底座功能契约文档（登录-权限-异常处理-审计）.docx、docs/backend-interface-design.md 第8/9节、.qoder/rules.md 
+  ▎ 第2节TDD铁律，在srm-backend/实现登录、统一异常处理、权限拦截这三块底座代码（先不做供应商/绩效等业务Controller）。
+  ▎
+  ▎ 具体范围：
+  ▎ 1. common包：ApiResponse<T>、PageResult<T>、BusinessException、ErrorCode枚举
+  ▎ 2. security包：JwtTokenProvider、JwtAuthenticationFilter、CustomUserDetailsService、UserPrincipal、RestAuthenticationEntryPoint、RestAccessDeniedHandler
+  ▎ 3. 全局异常处理：GlobalExceptionHandler（@RestControllerAdvice）
+  ▎ 4. POST /api/v1/auth/login接口本身（依据docs/api-spec.md第1节）
+  ▎
+  ▎ 先写失败的单元测试再写实现（Red-Green-Refactor），JUnit 5 + Mockito。实现完成后运行 bash 
+  ▎ .qoder/skills/check-coverage.sh，若退出码非0，按.qoder/agents/coverage-fixer.json的流程自动补测直到该脚本返回0。
+
+  ---
+
+  这一刀做完的验收标准（你可以拿这个判断它是不是真的做完了，不是它说"完成"就完了）：
+  - mvn test全过，覆盖率脚本退出码为0
+  - 能实际调用POST /api/v1/auth/login用三个demo账号登录成功，拿到token
+  - 拿着token调一个受保护接口（哪怕是占位的）：不带token返回40101，带token但角色不对返回40301
+  - 参数校验失败（比如密码为空）走GlobalExceptionHandler返回40001，不是原始异常堆栈
+  
+  等这一刀过了，回来找我要第二刀（供应商生命周期）的指令。
+

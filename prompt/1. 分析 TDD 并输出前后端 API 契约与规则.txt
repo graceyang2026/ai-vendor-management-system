@@ -1,4 +1,0 @@
-我上传了《供应商管理系统设计文档_V1.220260923.doc 。我们将采用供应商管理系统数字化演进全景架构_v1.3.jpg 的技术选型 进行前后端 MVP 开发。 请帮我进行架构分析并生成前后端 API 契约：
-1. 前后端职责与防篡改约束：分析第 7 节绩效评价，设计前后端数据隔离机制，确保前端仅输入 PerformanceFactRecord（客观批次/天数），后端硬编码算分（Q/D/P/S/C 五维）并返回计算结果与评级。 
-2. API 契约定义：生成包含 POST /api/v1/suppliers（建档/草稿）、POST /api/v1/performance/evaluations（客观事实录入与算分）、POST /api/v1/suppliers/{id}/audit（审核员决策） 的完整 JSON Request/Response DTO 结构及 TypeScript Interface。 
-3. 生成 AI 开发规则文件：请为我写一份可以直接存入 .qoder/rules.md 的 Markdown 全局开发规则，包含技术栈、RBAC 矩阵隔离、状态锁（PENDING_REVIEW 乐观锁 @Version）以及适配器模式（PerformanceMetricProvider）。
