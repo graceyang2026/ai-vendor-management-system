@@ -24,9 +24,6 @@ mybatis-plus:
       logic-not-delete-value: "0"
 
 srm:
-  jwt:
-    secret: test-only-secret-key-please-override-in-dotenv-file-min-32-chars
-    expiration-minutes: 480
   seed-demo-users: false
 
 logging:

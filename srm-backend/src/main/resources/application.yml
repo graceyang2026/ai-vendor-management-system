@@ -29,10 +29,6 @@ mybatis-plus:
       logic-not-delete-value: "0"
 
 srm:
-  jwt:
-    # 生产环境务必在 .env 中覆盖为一个足够长的随机密钥，此处默认值仅用于本地开发
-    secret: ${JWT_SECRET:local-dev-only-please-override-in-dotenv-file-min-32-chars}
-    expiration-minutes: ${JWT_EXPIRATION_MINUTES:480}
   seed-demo-users: ${SEED_DEMO_USERS:true}
 
 logging:
