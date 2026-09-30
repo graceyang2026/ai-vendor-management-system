@@ -69,17 +69,14 @@
 ```json
 {
   "token": "jwt-token",
-  "user": {
-    "id": 1,
-    "username": "staff01",
-    "real_name": "张三",
-    "role": "STAFF",
-    "enabled": true
-  }
+  "user_id": 1,
+  "username": "staff01",
+  "real_name": "张三",
+  "role": "STAFF"
 }
 ```
 
-> 不返回 `password` 或 `password_hash`。
+> 与 `docs/api-spec.md` 第1节保持一致的扁平结构；不返回 `password` 或 `password_hash`。
 
 ---
 
@@ -291,6 +288,36 @@
 
 # 4. 供应商资质
 
+## POST `/files/upload`
+
+**权限：STAFF**
+
+**Content-Type：`multipart/form-data`，字段名 `file`**
+
+上传文件换取 `file_url`，用于后续调用「添加供应商资质」时传入 `file_url`。本接口不写业务表、不做归属校验，只负责存储文件并返回可访问地址。
+
+### 规则
+
+- 仅允许扩展名：`pdf` / `jpg` / `jpeg` / `png`
+- 单文件不超过 10MB
+- 不符合以上任一条件返回 `40001`
+
+### 存储方式
+
+MVP 阶段存本地磁盘即可，不需要接云存储/OSS；后端通过静态资源映射（如 `/uploads/**` → 本地目录）对外提供返回的 `file_url`。
+
+### Response
+
+```json
+{
+  "file_url": "https://example.com/uploads/2026/04/xxxx.pdf",
+  "file_name": "营业执照.pdf",
+  "size": 102400
+}
+```
+
+---
+
 ## POST `/suppliers/{supplier_id}/qualifications`
 
 **权限：STAFF**
@@ -348,7 +375,7 @@
 
 > 对应 TDD 6.2 节 D4_1 `PerformanceEvaluationDraft`（评价草稿表）：STAFF 发起评价并录入客观事实明细时先落草稿，提交后才由算分引擎计算得分并生成正式的 `PerformanceEvaluation` 记录（`PENDING_REVIEW`）。不存在跳过草稿直接一步创建正式评价的接口。
 >
-> `mode` 与后端适配器实现（`ManualInputMetricAdapter` / `MockDataMetricAdapter` 等）的映射属于内部实现选择；TDD 各章节对适配器命名前后不一致（如 6.1 节 `ExternalSystemMetricAdapter` 与 7.2 节含义互换、8.1 节又用 `ExternalERPAdapter`），本 API 文档不依赖具体类名，Qoder 实现时以 `mode: manual/mock` 为唯一对外契约。
+> `mode` 与后端适配器实现的映射属于内部实现选择；TDD 各章节对适配器命名前后不一致（如 6.1 节与 7.2 节同名类含义互换、8.1 节又用另一个名字）。本 API 文档不依赖具体类名，Qoder 实现时以 `mode: manual/mock` 为唯一对外契约，适配器类名以 `docs/api-spec.md` 第7节为准。
 
 ## POST `/performance/evaluations/drafts`
 
@@ -877,10 +904,11 @@ Request 中不得出现：
   "username": "staff02",
   "password": "123456",
   "real_name": "李四",
-  "role": "STAFF",
-  "enabled": true
+  "role": "STAFF"
 }
 ```
+
+> 与 `docs/api-spec.md` 一致，创建时不接受 `enabled`；新用户默认 `enabled=true`，启停由 `PATCH /users/{id}/status` 单独控制。
 
 ### Response
 
@@ -897,7 +925,7 @@ Request 中不得出现：
 
 ---
 
-## PUT `/users/{id}/status`
+## PATCH `/users/{id}/status`
 
 **权限：ADMIN**
 

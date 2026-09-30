@@ -74,7 +74,7 @@ MVP 演示账号（启动时按需播种，仅当 `users` 表为空）：`admin/
 
 ### 状态机
 
-`DRAFT`（草稿/待提交） → `PENDING_REVIEW`（待审核，AUDITOR 审核中）→ 通过 → `NORMAL`（正常合作）；驳回 → `RETURNED`（待修改/已驳回，STAFF 改后可重新 `submit` 回到 `PENDING_REVIEW`）。`NORMAL ⇄ SUSPENDED`（停用/恢复）只能通过第 3 节的生命周期申请流转，不允许直接 PATCH 状态字段。`NORMAL`/`SUSPENDED` → `ELIMINATED`（淘汰，终态，仅 AUDITOR，不可逆）。
+`DRAFT`（草稿/待提交） → `PENDING_REVIEW`（待审核，AUDITOR 审核中）→ 通过 → `NORMAL`（正常合作）；驳回 → `RETURNED`（待修改/已驳回，STAFF 改后可重新 `submit` 回到 `PENDING_REVIEW`）。`NORMAL ⇄ SUSPENDED`（停用/恢复）只能通过第 3 节的生命周期申请流转，不允许直接 PATCH 状态字段。`NORMAL`/`SUSPENDED` → `ELIMINATED`（淘汰，终态、不可逆；须经第 3 节生命周期申请流程：STAFF 提交 `ELIMINATE` 申请，AUDITOR 审批通过后生效，不允许 AUDITOR 跳过申请直接变更状态）。
 
 `SupplierStatus` = `'DRAFT' | 'PENDING_REVIEW' | 'NORMAL' | 'RETURNED' | 'SUSPENDED' | 'ELIMINATED'`
 
@@ -151,6 +151,27 @@ interface SupplierAuditDecisionRequest {
 
 Response `data`: `SupplierResponse`
 
+### 文件上传
+
+供应商建档/资质相关的文件（营业执照等）先经此接口上传换取 `file_url`，再把 `file_url` 填入 `QualificationCreateRequest`；本接口本身不写业务表，不做归属校验。
+
+| 方法 | 路径 | 角色 | 说明 |
+|---|---|---|---|
+| POST | `/files/upload` | STAFF | `multipart/form-data`，字段名 `file` |
+
+**校验规则**：仅允许 `pdf`/`jpg`/`jpeg`/`png`；单文件不超过 10MB；超出限制或类型不符返回 `40001`。
+
+**存储方式**：MVP 阶段存本地磁盘即可，不需要接云存储/OSS；后端通过静态资源映射（如 `/uploads/**` → 本地目录）对外提供返回的 `file_url`。
+
+Response `data`:
+```ts
+interface FileUploadResponse {
+  file_url: string;   // 直接用于 QualificationCreateRequest.file_url
+  file_name: string;  // 原始文件名
+  size: number;        // 字节
+}
+```
+
 ### 资质 Qualification
 
 ```ts
@@ -179,7 +200,7 @@ interface QualificationCreateRequest {
 停用/恢复不是简单状态切换，而是"STAFF 提申请 → AUDITOR 终审"的两步流程，用独立资源 `LifecycleRequest` 记录，避免污染供应商状态枚举。
 
 ```ts
-type LifecycleRequestType = 'SUSPEND' | 'RESUME';
+type LifecycleRequestType = 'SUSPEND' | 'RESUME' | 'ELIMINATE';
 type LifecycleRequestStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
 
 interface LifecycleRequestResponse {
@@ -198,7 +219,7 @@ interface LifecycleRequestResponse {
 }
 interface LifecycleRequestCreateRequest {
   type: LifecycleRequestType;
-  reason: string;   // 必填：停用需说明原因（如 D 级绩效/合规问题），恢复需说明整改情况
+  reason: string;   // 必填：停用需说明原因（如 D 级绩效/合规问题），恢复需说明整改情况，淘汰需说明依据（如长期停用未整改/重大合规问题）
 }
 interface LifecycleDecisionRequest {
   decision: 'APPROVE' | 'REJECT';
@@ -208,9 +229,9 @@ interface LifecycleDecisionRequest {
 
 | 方法 | 路径 | 角色 | 说明 |
 |---|---|---|---|
-| POST | `/suppliers/{id}/lifecycle-requests` | STAFF | `type=SUSPEND` 仅当供应商当前为 `NORMAL`；`type=RESUME` 仅当当前为 `SUSPENDED`；同一供应商同一类型已有 `PENDING` 申请时返回 `40902` |
+| POST | `/suppliers/{id}/lifecycle-requests` | STAFF | `type=SUSPEND` 仅当供应商当前为 `NORMAL`；`type=RESUME` 仅当当前为 `SUSPENDED`；`type=ELIMINATE` 仅当当前为 `NORMAL` 或 `SUSPENDED`；同一供应商同一类型已有 `PENDING` 申请时返回 `40902` |
 | GET | `/suppliers/{id}/lifecycle-requests` | ALL | 申请历史 |
-| POST | `/lifecycle-requests/{id}/decision` | AUDITOR | `APPROVE` 且 `type=SUSPEND` → 供应商置 `SUSPENDED`；`APPROVE` 且 `type=RESUME` → 供应商置 `NORMAL`；`REJECT` 只改申请状态，供应商状态不变。全量写 `AuditLog` |
+| POST | `/lifecycle-requests/{id}/decision` | AUDITOR | `APPROVE` 且 `type=SUSPEND` → 供应商置 `SUSPENDED`；`APPROVE` 且 `type=RESUME` → 供应商置 `NORMAL`；`APPROVE` 且 `type=ELIMINATE` → 供应商置 `ELIMINATED`（终态，之后不可再对该供应商创建任何生命周期申请）；`REJECT` 只改申请状态，供应商状态不变。全量写 `AuditLog` |
 
 ---
 
@@ -281,23 +302,24 @@ interface PerformanceEvaluationResponse {
   reviewed_at?: string;
   review_comment?: string;
 }
-```
 
-### 4.3 接口
+type DraftStatus = 'DRAFT' | 'SUBMITTED';
 
-| 方法 | 路径 | 角色 | 说明 |
-|---|---|---|---|
-| POST | `/performance/evaluations` | STAFF | 见下，创建即锁死进入 `PENDING_REVIEW` |
-| PUT | `/performance/evaluations/{id}` | STAFF（本人） | 仅 `status=RETURNED` 可改事实重新提交，重新触发算分 |
-| POST | `/performance/evaluations/{id}/review` | AUDITOR | 复核：`APPROVE` 归档、`REJECT` 退回 |
-| GET | `/performance/evaluations` | ALL | query: `supplier_id?`, `status?`, `page`, `page_size` |
-| GET | `/performance/evaluations/{id}` | ALL | 详情 |
+interface PerformanceEvaluationDraftResponse {
+  id: number;
+  supplier_id: number;
+  period_start: string;
+  period_end: string;
+  mode: 'manual' | 'mock';
+  fact_record?: PerformanceFactRecord;
+  status: DraftStatus;
+  created_by: number;
+  created_by_name: string;
+  created_at: string;
+  updated_at: string;
+}
 
-### `POST /performance/evaluations`
-
-Request:
-```ts
-interface PerformanceEvaluationCreateRequest {
+interface PerformanceEvaluationDraftCreateRequest {
   supplier_id: number;
   period_start: string;
   period_end: string;
@@ -306,10 +328,42 @@ interface PerformanceEvaluationCreateRequest {
 }
 ```
 
+> 对应 TDD 6.2 节 D4_1 `PerformanceEvaluationDraft`（评价草稿表）：STAFF 发起评价、录入客观事实明细时先落草稿；`submit` 才触发算分引擎并生成正式的 `PerformanceEvaluationResponse` 记录（`PENDING_REVIEW`）。**不存在跳过草稿直接一步创建正式评价的接口**——这一点覆盖了本文档此前"没有独立的草稿态 API"的旧结论。
+
+### 4.3 接口
+
+| 方法 | 路径 | 角色 | 说明 |
+|---|---|---|---|
+| POST | `/performance/evaluations/drafts` | STAFF | 发起评价，创建草稿，`status=DRAFT` |
+| PUT | `/performance/evaluations/drafts/{id}` | STAFF（本人） | 仅 `status=DRAFT` 且 `mode=manual` 可改 `fact_record` |
+| DELETE | `/performance/evaluations/drafts/{id}` | STAFF（本人） | 仅 `status=DRAFT` 可删，逻辑删除 |
+| GET | `/performance/evaluations/drafts/{id}` | ALL | 草稿详情 |
+| GET | `/performance/evaluations/drafts` | ALL | query: `supplier_id?`, `status?`, `page`, `page_size` |
+| POST | `/performance/evaluations/drafts/{id}/submit` | STAFF（本人） | 见下，提交草稿触发算分，生成正式评价并锁死进入 `PENDING_REVIEW` |
+| PUT | `/performance/evaluations/{id}` | STAFF（本人） | 仅 `status=RETURNED` 可改事实重新提交，重新触发算分 |
+| POST | `/performance/evaluations/{id}/review` | AUDITOR | 复核：`APPROVE` 归档、`REJECT` 退回 |
+| GET | `/performance/evaluations` | ALL | query: `supplier_id?`, `status?`, `page`, `page_size` |
+| GET | `/performance/evaluations/{id}` | ALL | 详情 |
+
+### `POST /performance/evaluations/drafts`
+
+Request: `PerformanceEvaluationDraftCreateRequest`（见上）
+
 - `mode=manual`：由 `ManualFactInputAdapter` 校验 `fact_record`（非负、`qc_failed_batches ≤ qc_total_batches`、`delayed_batches ≤ total_batches` 等），校验失败 `40001`。
-- `mode=mock`：由 `MockDataMetricAdapter` 按种子规则自动生成事实数据（演示/测试专用），**前端传入的 `fact_record` 会被服务端忽略而不是报错**，避免误以为可以借 mock 模式夹带自定义分数。
-- 同一 `supplier_id` + `period_start`/`period_end` 已存在未归档（`PENDING_REVIEW`/`RETURNED`）评价单时返回 `40902`（同周期只允许一张在途评价单，防止多线程算分冲突）。
-- 创建成功即 `status = PENDING_REVIEW`（"评分提交后立即进入待复核且数据不可逆锁死"，没有独立的草稿态 API）。
+- `mode=mock`：创建草稿时立即由 `MockDataMetricAdapter` 按种子规则自动生成事实数据并存入草稿（演示/测试专用），**前端传入的 `fact_record` 会被服务端忽略而不是报错**，避免误以为可以借 mock 模式夹带自定义分数；`mock` 草稿的 `fact_record` 不允许后续修改。
+- 创建草稿不做同周期唯一性校验（唯一性校验在 `submit` 时进行）。
+
+Response `data`: `PerformanceEvaluationDraftResponse`
+
+### `PUT /performance/evaluations/drafts/{id}`
+
+仅当前用户是创建人、`status=DRAFT`、`mode=manual` 时可改 `fact_record`，否则 `40302`。Response `data`: `PerformanceEvaluationDraftResponse`。
+
+### `POST /performance/evaluations/drafts/{id}/submit`
+
+- 仅当前用户是创建人且 `status=DRAFT`，否则 `40302`。
+- 同一 `supplier_id` + `period_start`/`period_end` 已存在未归档（`PENDING_REVIEW`/`RETURNED`）正式评价单时返回 `40902`（同周期只允许一张在途评价单，防止多线程算分冲突）。
+- 提交成功后：由 `PerformanceScoreCalculator` 读取草稿 `fact_record` 完成加权计算与评级映射，创建正式评价记录且 `status = PENDING_REVIEW`（评分提交后立即进入待复核且数据不可逆锁死）；草稿本身置 `status=SUBMITTED` 并逻辑删除，不可再编辑或再次提交。
 
 Response `data`: `PerformanceEvaluationResponse`
 
@@ -333,7 +387,7 @@ interface PerformanceReviewDecisionRequest {
 ```ts
 interface AuditLogResponse {
   id: number;
-  entity_type: 'SUPPLIER' | 'PERFORMANCE_EVALUATION' | 'LIFECYCLE_REQUEST';
+  entity_type: 'SUPPLIER' | 'PERFORMANCE_EVALUATION' | 'PERFORMANCE_EVALUATION_DRAFT' | 'LIFECYCLE_REQUEST';
   entity_id: number;
   operator_id: number;
   operator_name: string;
@@ -379,6 +433,8 @@ interface UserCreateRequest {
 ---
 
 ## 7. 适配器模式说明（供后端实现对齐）
+
+> TDD 对适配器命名前后不一致（6.1/7.2/8.1 节各不相同，甚至同名类在不同章节指代不同模式）。本节命名是后端实现唯一依据，Qoder 按本节生成类名，不需要与 TDD 逐字对应。
 
 `PerformanceMetricProvider` 接口只负责"取事实数据"（DFD 中的 P6），不做算分：
 
