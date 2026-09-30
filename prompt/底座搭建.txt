@@ -1,3 +1,23 @@
+ 测试调用：
+   ---
+
+   ▎ 依据docs/api-spec.md第1节、docs/backend-interface-design.md第8/9/10节，在srm-backend/实现POST /api/v1/auth/login这一个接口。
+   ▎
+   ▎ 范围只到"能登录成功、登录失败"为止，不做其他受保护接口的权限拦截测试（RestAccessDeniedHandler/40301这部分本次不需要验证，因为登录接口本身不需要鉴权）。
+   ▎
+   ▎ 具体涉及：
+   ▎ 1. common包：ApiResponse<T>、BusinessException、ErrorCode枚举（含新增的INVALID_CREDENTIALS(40102)）
+   ▎ 2. security包：JwtTokenProvider（签发token）、CustomUserDetailsService（读用户）、UserPrincipal
+   ▎ 3. config包：SecurityConfig（放行/auth/login、配置PasswordEncoder）、DemoUserSeeder（播种三个演示账号）
+   ▎ 4. GlobalExceptionHandler：处理BusinessException统一返回ApiResponse
+   ▎
+   ▎ 用户名不存在/密码错误/enabled=false统一返回40102，不区分具体原因。
+
+   ---
+
+
+
+
  ---
 
   ▎ 依据 docs/SRM 底座功能契约文档（登录-权限-异常处理-审计）.docx、docs/backend-interface-design.md 第8/9节、.qoder/rules.md 
@@ -21,4 +41,42 @@
   - 参数校验失败（比如密码为空）走GlobalExceptionHandler返回40001，不是原始异常堆栈
   
   等这一刀过了，回来找我要第二刀（供应商生命周期）的指令。
+
+
+我先写一个登陆接口，然后我想观察各个架构组建md json的协作过程该怎么做？
+
+⏺ 我看不到Qoder运行时的实时过程（那是它自己的工具，不在我这个会话里跑），但可以给你一套具体的观察方法，你自己操作，我可以帮你事后核对结果。
+
+  开始前，先留一个"快照"，方便对比：
+  git status
+  git stash list
+  确认工作区干净，这样之后git diff看到的全是Qoder这次任务产生的改动，不会跟别的东西混在一起。
+
+  任务执行中，盯这几个信号：
+  1. hook有没有真的触发——改完Java文件后，终端/Qoder的输出面板里应该能看到./mvnw -q test和bash .qoder/skills/check-coverage.sh被执行的痕迹（这两条命令的标准输
+     出，比如Maven的测试报告摘要）。如果压根没看到这些输出，说明.qoder/settings.json里的hook没被触发，值得单独去查为什么。
+  2. 有没有touch到不该碰的范围——它本该只做登录/权限拦截/异常处理，不该碰供应商/绩效模块。如果Qoder的界面能看它当前在读哪个文件，留意它有没有打开backend-interf
+     ace-design.md第2-7节（业务模块部分）——理论上不该需要。
+
+  任务完成后，用证据说话，不要只看它自己汇报"完成了"：
+  git diff --stat          # 看这次改动碰了哪些文件，范围对不对
+  git diff                 # 看具体改了什么
+  把git diff --stat的结果发给我，我可以帮你核对：
+  - 有没有超出"登录+权限拦截+异常处理"这个范围（比如意外生成了SupplierController）
+  - 类名/方法签名跟backend-interface-design.md第8/9/10节对不对得上
+  - 有没有真的新建了*Test.java（TDD铁律要求"不允许无测试提交业务逻辑"）
+
+  再核对覆盖率报告是不是真的跑过：
+  ls -la srm-backend/target/site/jacoco/jacoco.csv
+  cat srm-backend/target/site/jacoco/jacoco.csv | head -5
+  看文件修改时间是不是刚才那次任务期间生成的，不是旧的缓存结果。
+
+  最后，用我们之前定的验收标准去实测，不要信它口头汇报：
+  cd srm-backend && ./mvnw spring-boot:run &
+  curl -X POST http://localhost:8080/api/v1/auth/login -H "Content-Type: application/json" -d '{"username":"staff01","password":"Staff@123"}'
+  拿到token后再试一次不带token、一次角色不对的场景，验证40101/40301/40001是不是真的按错误码表返回。
+
+  你可以照这个流程走一遍，把git diff和覆盖率报告贴给我，我帮你逐条核对是不是真的按文档做的。
+
+
 
