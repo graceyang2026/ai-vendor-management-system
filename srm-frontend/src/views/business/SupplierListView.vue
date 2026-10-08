@@ -6,7 +6,8 @@ import { ElMessage } from 'element-plus'
 import { useUserStore } from '@/stores/user'
 import SupplierLogTable from '@/components/business/SupplierLogTable.vue'
 import SupplierHistoryLogTable from '@/components/business/SupplierHistoryLogTable.vue'
-import { getSupplierStatusTagType } from '@/types/supplier-log'
+import { SUPPLIER_STATUS_CODES } from '@/types/supplier-log'
+import { getStatusLabel, getStatusTagType } from '@/constants/auditLogView'
 
 /**
  * 业务员控制台（参考 docs/mockups/原型展示-采购员v1.1_待评审20260929.html）。
@@ -29,6 +30,7 @@ interface SupplierDemoRow {
   contact_email?: string
   address?: string
   business_license_url?: string
+  /** SupplierStatus 枚举码（api-spec 第 2 节），中文展示经字典映射 */
   status: string
   risk_warning: boolean
 }
@@ -45,7 +47,7 @@ const SUPPLIER_DEMO_LIST: SupplierDemoRow[] = [
     contact_email: 'wang@bm.com',
     address: '北京市海淀区科技园1号',
     business_license_url: '营业执照_智造.pdf',
-    status: '草稿/待提交',
+    status: 'DRAFT',
     risk_warning: false,
   },
   {
@@ -58,7 +60,7 @@ const SUPPLIER_DEMO_LIST: SupplierDemoRow[] = [
     contact_email: 'li@hualian.com',
     address: '上海市浦东新区张江高科',
     business_license_url: '营业执照_华联.pdf',
-    status: '待修改',
+    status: 'RETURNED',
     risk_warning: false,
   },
   {
@@ -71,7 +73,7 @@ const SUPPLIER_DEMO_LIST: SupplierDemoRow[] = [
     contact_email: 'service@xunjie.com',
     address: '深圳市南山区',
     business_license_url: '营业执照_迅捷.pdf',
-    status: '正常/合作中',
+    status: 'NORMAL',
     risk_warning: false,
   },
   {
@@ -84,7 +86,7 @@ const SUPPLIER_DEMO_LIST: SupplierDemoRow[] = [
     contact_email: 'zhao@czzg.com',
     address: '河北省沧州市开发区',
     business_license_url: '营业执照_沧州重工.pdf',
-    status: '停用',
+    status: 'SUSPENDED',
     risk_warning: true,
   },
 ]
@@ -99,7 +101,7 @@ const currentSupplier = ref<SupplierDemoRow>(SUPPLIER_DEMO_LIST[0])
 const searchForm = reactive({ name: '', status: '' })
 const supplierList = ref<SupplierDemoRow[]>([...SUPPLIER_DEMO_LIST])
 
-const statusOptions = ['草稿/待提交', '待审核', '正常/合作中', '待修改', '停用', '淘汰']
+const statusOptions = SUPPLIER_STATUS_CODES
 
 /** 新增/编辑弹窗等档案写操作保留占位，下一步对接真实接口。 */
 function handlePlaceholder(featureName: string) {
@@ -190,7 +192,7 @@ async function handleLogout() {
               </el-form-item>
               <el-form-item label="合作状态">
                 <el-select v-model="searchForm.status" placeholder="全部状态" clearable style="width: 160px">
-                  <el-option v-for="statusOption in statusOptions" :key="statusOption" :label="statusOption" :value="statusOption" />
+                  <el-option v-for="statusCode in statusOptions" :key="statusCode" :label="getStatusLabel(statusCode)" :value="statusCode" />
                 </el-select>
               </el-form-item>
               <el-form-item>
@@ -206,7 +208,7 @@ async function handleLogout() {
               <el-table-column prop="contact_phone" label="联系电话" width="130" />
               <el-table-column prop="status" label="当前状态与风险标记" width="180">
                 <template #default="scope">
-                  <el-tag :type="getSupplierStatusTagType(scope.row.status)">{{ scope.row.status }}</el-tag>
+                  <el-tag :type="getStatusTagType(scope.row.status)">{{ getStatusLabel(scope.row.status) }}</el-tag>
                   <el-tag v-if="scope.row.risk_warning" type="danger" effect="dark" style="margin-left: 5px">风险预警</el-tag>
                 </template>
               </el-table-column>
@@ -232,7 +234,7 @@ async function handleLogout() {
                 <el-descriptions-item label="统一社会信用代码/税号">{{ currentSupplier.tax_no }}</el-descriptions-item>
                 <el-descriptions-item label="供应商类型">{{ currentSupplier.type }}</el-descriptions-item>
                 <el-descriptions-item label="当前状态与标记">
-                  <el-tag :type="getSupplierStatusTagType(currentSupplier.status)">{{ currentSupplier.status }}</el-tag>
+                  <el-tag :type="getStatusTagType(currentSupplier.status)">{{ getStatusLabel(currentSupplier.status) }}</el-tag>
                   <el-tag v-if="currentSupplier.risk_warning" type="danger" effect="dark" style="margin-left: 5px">
                     风险预警 (硬阻断开启)
                   </el-tag>

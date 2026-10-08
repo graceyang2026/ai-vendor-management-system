@@ -4,11 +4,20 @@ import { ElMessage } from 'element-plus'
 import { getSupplierLogListApi } from '@/api/supplier-log'
 import { ApiError } from '@/utils/request'
 import { SUPPLIER_LOG_DEMO_LIST } from '@/constants/supplierLogDemo'
-import { getSupplierStatusTagType, type SupplierLogItem } from '@/types/supplier-log'
+import {
+  formatCreatedAt,
+  formatOperator,
+  getActionLabel,
+  getActionTagType,
+  getEntityLabelOrId,
+  getStatusLabel,
+  getStatusTagType,
+} from '@/constants/auditLogView'
+import type { AuditLogRecord } from '@/types/audit-log'
 
 /**
  * 特定供应商档案的追溯日志历史（嵌入供应商详情页"当前档案追溯日志历史"卡片）。
- * 接收 supplier_id / supplier_name 作为 Prop；后端未就绪时按供应商本地过滤示例数据兜底。
+ * 入参 supplier-id 映射后端 entity_id；后端未就绪时按对象名本地过滤示例数据兜底。
  */
 const props = defineProps<{
   supplierId?: string | number
@@ -16,15 +25,15 @@ const props = defineProps<{
 }>()
 
 const loading = ref(false)
-const logs = ref<SupplierLogItem[]>([])
+const logs = ref<AuditLogRecord[]>([])
 const isDemoData = ref(false)
 
 function applyDemoFilter() {
   logs.value = SUPPLIER_LOG_DEMO_LIST.filter((log) => {
-    if (props.supplierId !== undefined) {
-      return log.supplier_id === props.supplierId
+    if (props.supplierId !== undefined && log.entity_id === props.supplierId) {
+      return true
     }
-    return log.supplier_name === props.supplierName
+    return getEntityLabelOrId(log) === props.supplierName
   })
   isDemoData.value = true
 }
@@ -33,8 +42,7 @@ async function loadLogs() {
   loading.value = true
   try {
     const res = await getSupplierLogListApi({
-      supplier_id: props.supplierId,
-      supplier_name: props.supplierName,
+      entity_id: props.supplierId,
       page: 1,
       page_size: 100,
     })
@@ -67,20 +75,32 @@ onMounted(loadLogs)
       style="margin-bottom: 12px"
     />
     <el-table v-loading="loading" :data="logs" border stripe style="width: 100%">
-      <el-table-column prop="created_at" label="操作时间" width="170" />
-      <el-table-column prop="operator_name" label="操作人" width="130" />
-      <el-table-column prop="action_type" label="操作类型" width="140" />
-      <el-table-column prop="old_status" label="原状态" width="120">
+      <el-table-column label="操作时间" width="170">
+        <template #default="scope">{{ formatCreatedAt(scope.row.created_at) }}</template>
+      </el-table-column>
+      <el-table-column label="操作人" width="160">
+        <template #default="scope">{{ formatOperator(scope.row.operator_name, scope.row.operator_role) }}</template>
+      </el-table-column>
+      <el-table-column label="操作类型" width="150">
         <template #default="scope">
-          <el-tag size="small" type="info">{{ scope.row.old_status }}</el-tag>
+          <el-tag size="small" :type="getActionTagType(scope.row.action)">{{ getActionLabel(scope.row.action) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="new_status" label="新状态" width="120">
+      <el-table-column label="原状态" width="130">
         <template #default="scope">
-          <el-tag size="small" :type="getSupplierStatusTagType(scope.row.new_status)">{{ scope.row.new_status }}</el-tag>
+          <el-tag size="small" type="info">{{ getStatusLabel(scope.row.old_status, scope.row.entity_type) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="comment" label="意见 / 结果说明" min-width="220" show-overflow-tooltip />
+      <el-table-column label="新状态" width="130">
+        <template #default="scope">
+          <el-tag size="small" :type="getStatusTagType(scope.row.new_status)">{{
+            getStatusLabel(scope.row.new_status, scope.row.entity_type)
+          }}</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="意见 / 结果说明" min-width="220" show-overflow-tooltip>
+        <template #default="scope">{{ scope.row.comment || '-' }}</template>
+      </el-table-column>
     </el-table>
     <el-empty v-if="!loading && logs.length === 0" description="该供应商暂无追溯日志" :image-size="60" />
   </div>

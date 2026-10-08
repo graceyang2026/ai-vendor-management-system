@@ -1,74 +1,77 @@
 /**
  * 审核员（AUDITOR）视角的操作与审批日志类型定义。
- * 接口字段严格使用 snake_case（docs/api-spec.md 第 0 节命名约定 + 第 5 节审计日志），
- * 前端 TS 字段名与 JSON 保持一致，禁止混用 camelCase。
+ *
+ * 字段契约严格对齐后端 docs/api-spec.md 第 5 节 AuditLogResponse
+ * （实现：srm-backend AuditLogResponse.java + audit_log 表 schema.sql 第 7 节），
+ * 全链路 snake_case；action / entity_type / old_status / new_status 传后端枚举码（见
+ * @/constants/auditDictionary），中文文案只在展示层映射。
  */
 
-/** 日志列表项（审核员合规审计与过程日志契约）。 */
-export interface ReviewLogItem {
+import type { AuditActionCode, EntityTypeCode } from '@/constants/auditDictionary'
+
+/**
+ * 审计日志记录（后端 AuditLogResponse 唯一形态，三个日志模块共用）。
+ * snake_case 与 JSON 字段名一一对应，禁止 camelCase。
+ */
+export interface AuditLogRecord {
   id: string | number
-  /** 操作时间 */
-  created_at: string
-  /** 目标供应商 ID */
-  supplier_id: string | number
-  /** 目标供应商名称 */
-  supplier_name: string
-  /** 操作人/审核人，如：LiSi (审核员) */
+  /** 业务对象类型码，见 ENTITY_TYPE */
+  entity_type: EntityTypeCode | string
+  /** 业务对象 ID（供应商 ID / 申请单 ID / 用户 ID） */
+  entity_id: string | number | null
+  operator_id: string | number | null
+  /** audit_log 表不存姓名，后端经 sys_user.real_name 反查填充 */
   operator_name: string
-  /** 动作/类型（准入审核通过、准入审核驳回、状态变更审核、恢复合作审核、等级调整审核等），见 REVIEW_ACTION_TYPES */
-  action_type: string
-  /** 原状态，如：待审核、草稿 */
-  old_status: string
-  /** 新状态，如：正常/合作中、已驳回 */
-  new_status: string
-  /** 审核意见/驳回原因/审批说明 */
-  comment: string
+  /** 操作人角色码：ADMIN / STAFF / AUDITOR */
+  operator_role: string | null
+  /** 动作码，见 AUDIT_ACTION（不是 action_type，也不是中文） */
+  action: AuditActionCode | string
+  old_status: string | null
+  new_status: string | null
+  /** 操作结果码：SUCCESS / REJECTED */
+  result: string | null
+  /** 审核意见 / 驳回原因 / 审批说明 */
+  comment: string | null
+  /** ISO-8601（后端 LocalDateTime），展示用 formatCreatedAt 转换 */
+  created_at: string
+  /**
+   * 目标对象名称（如供应商名、账号名）。后端 AuditLogResponse 当前不返回，
+   * 属前端请求的扩展字段（见 docs/backend-interface-design.md 待补项）；
+   * 缺失时列表按 entity_type + entity_id 展示，兜底示例数据可携带。
+   */
+  entity_name?: string
 }
 
-/** 日志查询参数（query string，snake_case；supplier_id 映射后端 entity_id）。 */
+/** 审核员视角日志项（与通用记录同构，保留语义化别名供审计控制台使用）。 */
+export type ReviewLogItem = AuditLogRecord
+
+/**
+ * 日志查询参数：仅保留后端 AuditLogController 已支持的 entity_type / entity_id / page / page_size。
+ * action 为扩展筛选参数（后端补齐前会被忽略），取值必须是动作码。
+ */
 export interface ReviewLogQueryParams {
-  supplier_name?: string
-  action_type?: string
-  supplier_id?: string | number
+  entity_type?: EntityTypeCode | string
+  entity_id?: string | number
+  /** 扩展参数：动作码筛选 */
+  action?: AuditActionCode | string
+  /** 扩展参数：目标对象名称模糊筛选（后端需联表或前端反查，当前被忽略） */
+  entity_name?: string
+  /** 扩展参数：操作人姓名模糊筛选（后端 operator_name 由 sys_user 反查，当前不支持作筛选条件） */
+  operator_name?: string
+  /** 扩展参数：起始日期 YYYY-MM-DD（后端当前仅有 entity_type/entity_id/page/page_size） */
+  start_date?: string
+  /** 扩展参数：结束日期 YYYY-MM-DD */
+  end_date?: string
   page: number
   page_size: number
 }
 
 /**
- * 审核动作类型筛选选项（与原型"操作与审批日志"筛选下拉一致：
- * 资质审核通过/资质审核驳回/批准停用/批准淘汰/恢复正常合作/绩效复核通过，
- * 语义对应任务契约的准入审核通过、状态变更审核、恢复合作审核、等级调整审核等）。
+ * 审核员控制台涉及的业务对象类型（准入审核=SUPPLIER，
+ * 停用/恢复/淘汰终审=LIFECYCLE_REQUEST，绩效复核=PERFORMANCE_EVALUATION）。
  */
-export const REVIEW_ACTION_TYPES = [
-  '资质审核通过',
-  '资质审核驳回',
-  '批准停用',
-  '批准淘汰',
-  '恢复正常合作',
-  '绩效复核通过',
-] as const
-
-export type ReviewTagType = 'success' | 'warning' | 'danger' | 'info'
-
-/**
- * 审核流转状态的 el-tag 颜色映射（与原型 getStatusTagType 一致：
- * 待审核→warning、正常/合作中→success、待修改→danger、停用→info、其余→danger，
- * 并按任务契约补充"已驳回"→danger）。
- */
-export const REVIEW_STATUS_TAG_TYPE: Record<string, ReviewTagType> = {
-  无: 'info',
-  '草稿/待提交': 'info',
-  待审核: 'warning',
-  '正常/合作中': 'success',
-  待修改: 'danger',
-  已驳回: 'danger',
-  停用: 'info',
-  淘汰: 'danger',
-  待审计员复核: 'warning',
-  已复核通过: 'success',
-  已驳回重打分: 'danger',
-}
-
-export function getReviewStatusTagType(status: string): ReviewTagType {
-  return REVIEW_STATUS_TAG_TYPE[status] ?? 'danger'
-}
+export const AUDITOR_ENTITY_TYPES = [
+  'SUPPLIER',
+  'LIFECYCLE_REQUEST',
+  'PERFORMANCE_EVALUATION',
+] as const satisfies readonly EntityTypeCode[]

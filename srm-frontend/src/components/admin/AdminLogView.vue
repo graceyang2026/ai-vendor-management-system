@@ -3,74 +3,119 @@ import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { getAdminLogListApi } from '@/api/admin-log'
 import { ApiError } from '@/utils/request'
-import { ADMIN_ACTION_TYPES, type AdminLogItem } from '@/types/admin-log'
+import { ADMIN_ACTION_OPTIONS, ADMIN_PENDING_ACTION } from '@/types/admin-log'
+import type { AuditLogRecord } from '@/types/audit-log'
+import {
+  formatCreatedAt,
+  formatOperator,
+  getEntityLabelOrId,
+  getStatusLabel,
+  getStatusTagType,
+  resolveActionLabel,
+  resolveActionTagType,
+} from '@/constants/auditLogView'
 
-/** 原型示例数据：后端管理日志查询形态未就绪时兜底，保证页面可演示（数据取自管理员原型）。 */
-const DEMO_LOGS: AdminLogItem[] = [
+/**
+ * 系统管理操作与权限审计日志（ADMIN 维度，entity_type=USER）。
+ * 契约收敛说明：原型自造的 action_type / target_object / detail 后端不存在，
+ * 分别对应真实字段 action / entity_id(+entity_name) / comment；
+ * 用户管理动作码后端 AuditAction 尚未定义（见 ADMIN_PENDING_ACTION），接入前走示例数据兜底。
+ */
+const DEMO_LOGS: AuditLogRecord[] = [
   {
     id: 1,
-    created_at: '2026-09-16 08:30:15',
-    operator_name: '超级管理员 (Admin)',
-    action_type: '新增用户',
-    target_object: 'EMP001 (张三)',
-    detail: '成功创建业务员账号，分配角色：业务员 (Staff)',
+    entity_type: 'USER',
+    entity_id: 2,
+    operator_id: 1,
+    operator_name: '超级管理员',
+    operator_role: 'ADMIN',
+    action: ADMIN_PENDING_ACTION.CREATE_USER,
+    old_status: null,
+    new_status: 'ENABLED',
+    result: 'SUCCESS',
+    comment: '成功创建业务员账号，分配角色：业务员 (Staff)',
+    created_at: '2026-09-16T08:30:15',
+    entity_name: 'staff01 (杨伟)',
   },
   {
     id: 2,
-    created_at: '2026-09-16 08:32:00',
-    operator_name: '超级管理员 (Admin)',
-    action_type: '新增用户',
-    target_object: 'EMP002 (李四)',
-    detail: '成功创建审计员账号，分配角色：审计员 (Auditor)',
+    entity_type: 'USER',
+    entity_id: 3,
+    operator_id: 1,
+    operator_name: '超级管理员',
+    operator_role: 'ADMIN',
+    action: ADMIN_PENDING_ACTION.CREATE_USER,
+    old_status: null,
+    new_status: 'ENABLED',
+    result: 'SUCCESS',
+    comment: '成功创建审计员账号，分配角色：审计员 (Auditor)',
+    created_at: '2026-09-16T08:32:00',
+    entity_name: 'auditor01 (李四)',
   },
   {
     id: 3,
-    created_at: '2026-09-16 09:10:45',
-    operator_name: '超级管理员 (Admin)',
-    action_type: '停用账号',
-    target_object: 'EMP003 (王五)',
-    detail: '将账号状态由【启用】变更为【停用】',
+    entity_type: 'USER',
+    entity_id: 4,
+    operator_id: 1,
+    operator_name: '超级管理员',
+    operator_role: 'ADMIN',
+    action: ADMIN_PENDING_ACTION.DISABLE_USER,
+    old_status: 'ENABLED',
+    new_status: 'DISABLED',
+    result: 'SUCCESS',
+    comment: '将账号状态由【启用】变更为【停用】',
+    created_at: '2026-09-16T09:10:45',
+    entity_name: 'staff02 (王五)',
   },
   {
     id: 4,
-    created_at: '2026-09-17 10:05:20',
-    operator_name: '超级管理员 (Admin)',
-    action_type: '调整用户角色',
-    target_object: 'EMP003 (王五)',
-    detail: '角色由【业务员 (Staff)】变更修改为【审计员 (Auditor)】',
+    entity_type: 'USER',
+    entity_id: 4,
+    operator_id: 1,
+    operator_name: '超级管理员',
+    operator_role: 'ADMIN',
+    action: ADMIN_PENDING_ACTION.UPDATE_ROLE,
+    old_status: 'STAFF',
+    new_status: 'AUDITOR',
+    result: 'SUCCESS',
+    comment: '角色由【业务员 (Staff)】变更修改为【审计员 (Auditor)】',
+    created_at: '2026-09-17T10:05:20',
+    entity_name: 'staff02 (王五)',
   },
   {
     id: 5,
-    created_at: '2026-09-17 14:42:08',
-    operator_name: '超级管理员 (Admin)',
-    action_type: '启用账号',
-    target_object: 'EMP003 (王五)',
-    detail: '账号状态从【停用】变更为【启用】',
+    entity_type: 'USER',
+    entity_id: 4,
+    operator_id: 1,
+    operator_name: '超级管理员',
+    operator_role: 'ADMIN',
+    action: ADMIN_PENDING_ACTION.ENABLE_USER,
+    old_status: 'DISABLED',
+    new_status: 'ENABLED',
+    result: 'SUCCESS',
+    comment: '账号状态从【停用】变更为【启用】',
+    created_at: '2026-09-17T14:42:08',
+    entity_name: 'staff02 (王五)',
   },
   {
     id: 6,
-    created_at: '2026-09-18 09:15:33',
-    operator_name: '超级管理员 (Admin)',
-    action_type: '调整用户角色',
-    target_object: 'EMP001 (张三)',
-    detail: '角色由【审计员 (Auditor)】变更修改为【业务员 (Staff)】',
+    entity_type: 'USER',
+    entity_id: 2,
+    operator_id: 1,
+    operator_name: '超级管理员',
+    operator_role: 'ADMIN',
+    action: ADMIN_PENDING_ACTION.UPDATE_ROLE,
+    old_status: 'AUDITOR',
+    new_status: 'STAFF',
+    result: 'SUCCESS',
+    comment: '角色由【审计员 (Auditor)】变更修改为【业务员 (Staff)】',
+    created_at: '2026-09-18T09:15:33',
+    entity_name: 'staff01 (杨伟)',
   },
 ]
 
-/** el-tag 颜色映射（任务规约）：新增/启用 success、调整 warning、停用 danger。 */
-const ACTION_TAG_TYPE: Record<string, 'success' | 'warning' | 'danger'> = {
-  新增用户: 'success',
-  启用账号: 'success',
-  调整用户角色: 'warning',
-  停用账号: 'danger',
-}
-
-function getActionTagType(actionType: string): 'success' | 'warning' | 'danger' {
-  return ACTION_TAG_TYPE[actionType] ?? 'success'
-}
-
 const loading = ref(false)
-const logs = ref<AdminLogItem[]>([])
+const logs = ref<AuditLogRecord[]>([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(10)
@@ -79,22 +124,27 @@ const isDemoData = ref(false)
 
 const filters = reactive({
   operatorName: '',
-  actionType: '',
+  action: '',
 })
 const dateRange = ref<string[] | null>(null)
 
-/** 示例数据本地筛选 + 分页（兜底模式下保持筛选/分页交互可用）。 */
-function applyDemoFilter() {
+/** 操作人 + 动作码 + 时间范围本地过滤（示例数据模式，兼作后端未实现筛选时的补偿）。 */
+function matchFilters(list: AuditLogRecord[]): AuditLogRecord[] {
   const startDate = dateRange.value?.[0]
   const endDate = dateRange.value?.[1]
-  const filtered = DEMO_LOGS.filter((log) => {
-    const matchOperator = !filters.operatorName || log.operator_name.includes(filters.operatorName)
-    const matchType = !filters.actionType || log.action_type === filters.actionType
+  return list.filter((log) => {
+    const matchOperator = !filters.operatorName || formatOperator(log.operator_name, log.operator_role).includes(filters.operatorName)
+    const matchAction = !filters.action || log.action === filters.action
     const logDate = log.created_at.slice(0, 10)
     const matchStart = !startDate || logDate >= startDate
     const matchEnd = !endDate || logDate <= endDate
-    return matchOperator && matchType && matchStart && matchEnd
+    return matchOperator && matchAction && matchStart && matchEnd
   })
+}
+
+/** 示例数据本地筛选 + 分页（兜底模式下保持筛选/分页交互可用）。 */
+function applyDemoFilter() {
+  const filtered = matchFilters(DEMO_LOGS)
   total.value = filtered.length
   logs.value = filtered.slice((page.value - 1) * pageSize.value, page.value * pageSize.value)
   isDemoData.value = true
@@ -106,14 +156,14 @@ async function loadLogs() {
   try {
     const res = await getAdminLogListApi({
       operator_name: filters.operatorName || undefined,
-      action_type: filters.actionType || undefined,
+      action: filters.action || undefined,
       start_date: dateRange.value?.[0],
       end_date: dateRange.value?.[1],
       page: page.value,
       page_size: pageSize.value,
     })
     if (res.data) {
-      logs.value = res.data.list
+      logs.value = matchFilters(res.data.list)
       total.value = res.data.total
       isDemoData.value = false
     }
@@ -132,7 +182,7 @@ function handleSearch() {
 
 function handleReset() {
   filters.operatorName = ''
-  filters.actionType = ''
+  filters.action = ''
   dateRange.value = null
   page.value = 1
   loadLogs()
@@ -180,8 +230,8 @@ onMounted(loadLogs)
         <el-input v-model="filters.operatorName" placeholder="搜索操作人..." clearable style="width: 180px" />
       </el-form-item>
       <el-form-item label="操作类型">
-        <el-select v-model="filters.actionType" placeholder="全部类型" clearable style="width: 160px">
-          <el-option v-for="actionType in ADMIN_ACTION_TYPES" :key="actionType" :label="actionType" :value="actionType" />
+        <el-select v-model="filters.action" placeholder="全部类型" clearable style="width: 160px">
+          <el-option v-for="option in ADMIN_ACTION_OPTIONS" :key="option.value" :label="option.label" :value="option.value" />
         </el-select>
       </el-form-item>
       <el-form-item label="时间范围">
@@ -203,15 +253,34 @@ onMounted(loadLogs)
 
     <!-- 表格区 -->
     <el-table v-loading="loading" :data="logs" border stripe style="width: 100%">
-      <el-table-column prop="created_at" label="操作时间" width="170" />
-      <el-table-column prop="operator_name" label="操作人" width="150" />
-      <el-table-column prop="action_type" label="操作类型" width="140">
+      <el-table-column label="操作时间" width="170">
+        <template #default="scope">{{ formatCreatedAt(scope.row.created_at) }}</template>
+      </el-table-column>
+      <el-table-column label="操作人" width="160">
+        <template #default="scope">{{ formatOperator(scope.row.operator_name, scope.row.operator_role) }}</template>
+      </el-table-column>
+      <el-table-column label="操作类型" width="140">
         <template #default="scope">
-          <el-tag size="small" :type="getActionTagType(scope.row.action_type)">{{ scope.row.action_type }}</el-tag>
+          <el-tag size="small" :type="resolveActionTagType(scope.row.action)">{{ resolveActionLabel(scope.row.action) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="target_object" label="目标账号/对象" width="160" />
-      <el-table-column prop="detail" label="详细变动记录与参数说明" min-width="240" show-overflow-tooltip />
+      <el-table-column label="目标账号/对象" width="170">
+        <template #default="scope">{{ getEntityLabelOrId(scope.row) }}</template>
+      </el-table-column>
+      <el-table-column label="状态/角色变更" width="200">
+        <template #default="scope">
+          <el-tag v-if="scope.row.old_status" size="small" type="info">{{
+            getStatusLabel(scope.row.old_status, scope.row.entity_type)
+          }}</el-tag>
+          <span v-if="scope.row.old_status" style="margin: 0 6px">→</span>
+          <el-tag size="small" :type="getStatusTagType(scope.row.new_status)">{{
+            getStatusLabel(scope.row.new_status, scope.row.entity_type)
+          }}</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="详细变动记录与参数说明" min-width="240" show-overflow-tooltip>
+        <template #default="scope">{{ scope.row.comment || '-' }}</template>
+      </el-table-column>
     </el-table>
 
     <!-- 分页区 -->

@@ -6,7 +6,7 @@ import { ElMessage } from 'element-plus'
 import { useUserStore } from '@/stores/user'
 import ReviewLogTable from '@/components/audit/ReviewLogTable.vue'
 import ReviewHistoryLogTable from '@/components/audit/ReviewHistoryLogTable.vue'
-import { getReviewStatusTagType } from '@/types/audit-log'
+import { getStatusLabel, getStatusTagType } from '@/constants/auditLogView'
 
 /**
  * 审计与合规控制台（参考 docs/mockups/原型展示-审核员v1.1_待评审20260917.html）。
@@ -39,11 +39,11 @@ async function handleLogout() {
   router.replace('/login')
 }
 
-/** 准入审核演示数据（原型 auditSuppliers，id 与追溯日志示例的 supplier_id 对应）。 */
+/** 准入审核演示数据（原型 auditSuppliers，id 与追溯日志示例的 entity_id 对应；status 为 SupplierStatus 枚举码）。 */
 interface AuditSupplier {
   id: number
   name: string
-  tax_id: string
+  tax_no: string
   type: string
   contact: string
   phone: string
@@ -53,18 +53,19 @@ interface AuditSupplier {
 }
 
 const auditSuppliers = reactive<AuditSupplier[]>([
-  { id: 1, name: '北京智造科技有限公司', tax_id: '91110108MA01982X', type: '生产制造业', contact: '王业务', phone: '13800138000', submitter: 'Yangwei', submit_time: '2026-09-16 09:20:00', status: '待审核' },
-  { id: 3, name: '深圳迅捷物流有限公司', tax_id: '914403003009821Z', type: '服务外包商', contact: '张总', phone: '13700009999', submitter: 'Yangwei', submit_time: '2026-09-15 14:00:00', status: '正常/合作中' },
-  { id: 2, name: '上海华联部件有限公司', tax_id: '913100006782103Y', type: '生产制造业', contact: '李经理', phone: '13911112222', submitter: 'Yangwei', submit_time: '2026-09-14 11:00:00', status: '待修改' },
+  { id: 1, name: '北京智造科技有限公司', tax_no: '91110108MA01982X', type: '生产制造业', contact: '王业务', phone: '13800138000', submitter: 'Yangwei', submit_time: '2026-09-16 09:20:00', status: 'PENDING_REVIEW' },
+  { id: 3, name: '深圳迅捷物流有限公司', tax_no: '914403003009821Z', type: '服务外包商', contact: '张总', phone: '13700009999', submitter: 'Yangwei', submit_time: '2026-09-15 14:00:00', status: 'NORMAL' },
+  { id: 2, name: '上海华联部件有限公司', tax_no: '913100006782103Y', type: '生产制造业', contact: '李经理', phone: '13911112222', submitter: 'Yangwei', submit_time: '2026-09-14 11:00:00', status: 'RETURNED' },
 ])
 
 const searchForm = reactive({ name: '', status: '' })
 
-const statusFilterOptions = ['待审核', '正常/合作中', '待修改']
+/** 审核列表状态筛选项（value=枚举码，label=中文）。 */
+const statusFilterOptions = ['PENDING_REVIEW', 'NORMAL', 'RETURNED'] as const
 
 const filteredSuppliers = () =>
   auditSuppliers.filter((s) => {
-    const matchName = !searchForm.name || s.name.includes(searchForm.name) || s.tax_id.includes(searchForm.name)
+    const matchName = !searchForm.name || s.name.includes(searchForm.name) || s.tax_no.includes(searchForm.name)
     const matchStatus = !searchForm.status || s.status === searchForm.status
     return matchName && matchStatus
   })
@@ -142,19 +143,19 @@ function handlePlaceholder(featureName: string) {
               </el-form-item>
               <el-form-item label="状态">
                 <el-select v-model="searchForm.status" placeholder="全部状态" clearable style="width: 140px">
-                  <el-option v-for="st in statusFilterOptions" :key="st" :label="st" :value="st" />
+                  <el-option v-for="statusCode in statusFilterOptions" :key="statusCode" :label="getStatusLabel(statusCode)" :value="statusCode" />
                 </el-select>
               </el-form-item>
             </el-form>
             <el-table :data="filteredSuppliers()" border stripe style="width: 100%">
               <el-table-column prop="name" label="供应商名称" min-width="180" />
-              <el-table-column prop="tax_id" label="统一社会信用代码/税号" width="190" />
+              <el-table-column prop="tax_no" label="统一社会信用代码/税号" width="190" />
               <el-table-column prop="type" label="供应商类型" width="130" />
               <el-table-column prop="submitter" label="提交业务员" width="120" />
               <el-table-column prop="submit_time" label="提交时间" width="160" />
               <el-table-column prop="status" label="当前状态" width="120">
                 <template #default="scope">
-                  <el-tag :type="getReviewStatusTagType(scope.row.status)">{{ scope.row.status }}</el-tag>
+                  <el-tag :type="getStatusTagType(scope.row.status)">{{ getStatusLabel(scope.row.status) }}</el-tag>
                 </template>
               </el-table-column>
               <el-table-column label="合规审核" width="160" fixed="right">
@@ -176,7 +177,7 @@ function handlePlaceholder(featureName: string) {
               <h4>企业提交基本信息校验</h4>
               <el-descriptions :column="2" border>
                 <el-descriptions-item label="企业全称">{{ currentSupplier.name }}</el-descriptions-item>
-                <el-descriptions-item label="统一社会信用代码/税号">{{ currentSupplier.tax_id }}</el-descriptions-item>
+                <el-descriptions-item label="统一社会信用代码/税号">{{ currentSupplier.tax_no }}</el-descriptions-item>
                 <el-descriptions-item label="企业类型">{{ currentSupplier.type }}</el-descriptions-item>
                 <el-descriptions-item label="联系人/电话">{{ currentSupplier.contact }} ({{ currentSupplier.phone }})</el-descriptions-item>
                 <el-descriptions-item label="提交业务员">{{ currentSupplier.submitter }}</el-descriptions-item>
@@ -191,7 +192,7 @@ function handlePlaceholder(featureName: string) {
             </div>
 
             <!-- 仅待审核状态显示审批表单（提交签署下一步实现） -->
-            <div v-if="currentSupplier.status === '待审核'" class="audit-box">
+            <div v-if="currentSupplier.status === 'PENDING_REVIEW'" class="audit-box">
               <h4 class="audit-box-title">审计员签署审核结论</h4>
               <el-form label-width="120px">
                 <el-form-item label="审核结果" required>
