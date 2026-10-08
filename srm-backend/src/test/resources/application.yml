@@ -12,6 +12,9 @@ spring:
     init:
       mode: always
       continue-on-error: false
+      # 测试环境用 H2 兼容的轻量 schema（仅建模块 1 需要的 sys_user 表），
+      # 避免主 schema.sql 中 MySQL 专属语法（生成列）在 H2 上失败
+      schema-locations: classpath:schema-h2.sql
 
 mybatis-plus:
   mapper-locations: classpath*:mapper/**/*.xml
@@ -25,6 +28,9 @@ mybatis-plus:
 
 srm:
   seed-demo-users: false
+  jwt:
+    secret: srm-test-jwt-secret-key-0123456789abcdefghijklmnopqrstuvwxyz
+    expiration-ms: 86400000
 
 logging:
   level:

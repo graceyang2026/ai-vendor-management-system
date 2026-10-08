@@ -30,6 +30,11 @@ mybatis-plus:
 
 srm:
   seed-demo-users: ${SEED_DEMO_USERS:true}
+  jwt:
+    # JWT 签名密钥，HS256 要求至少 32 字节；生产环境必须通过环境变量覆盖
+    secret: ${JWT_SECRET:srm-jwt-secret-key-change-me-in-production-2026}
+    # token 有效期（毫秒），默认 24 小时
+    expiration-ms: ${JWT_EXPIRATION_MS:86400000}
 
 logging:
   level:
