@@ -2,9 +2,10 @@ import axios, { AxiosError, type AxiosResponse } from 'axios'
 import { ElMessage } from 'element-plus'
 import router from '@/router'
 import { useUserStore } from '@/stores/user'
+import { ERROR_CODE, ERROR_CODE_MESSAGE } from '@/constants/errorCode'
 import type { ApiResponse } from '@/types/api'
 
-/** 后端统一响应体中非 0 code 对应的业务错误。 */
+/** 后端统一响应体中非 0 code 对应的业务错误（全量 code 见 constants/errorCode.ts）。 */
 export class ApiError extends Error {
   code: number
 
@@ -12,6 +13,20 @@ export class ApiError extends Error {
     super(message)
     this.code = code
   }
+}
+
+/**
+ * 提示文案策略：一律优先透传后端 message（40001/40302 等是动态具体文案，前端不得覆盖）；
+ * 后端未给 message 时按 code 查兜底文案表。
+ */
+function resolveErrorMessage(code: number | undefined, backendMessage?: string): string {
+  if (backendMessage) {
+    return backendMessage
+  }
+  if (code !== undefined && ERROR_CODE_MESSAGE[code]) {
+    return ERROR_CODE_MESSAGE[code]
+  }
+  return '请求失败，请稍后重试'
 }
 
 const service = axios.create({
@@ -28,12 +43,16 @@ service.interceptors.request.use((config) => {
   return config
 })
 
-/** token 失效：清空本地登录态并回登录页（40101）。 */
+/**
+ * 40101 UNAUTHORIZED（token 缺失/失效）：清空本地登录态并回登录页。
+ * 注：40301 FORBIDDEN（角色不匹配）不走此分支 ——
+ * 页面级角色拦截由路由守卫负责，接口级权限错误透传给调用方处理。
+ */
 function handleUnauthorized() {
   const userStore = useUserStore()
   userStore.reset()
   if (router.currentRoute.value.path !== '/login') {
-    ElMessage.warning('登录已过期，请重新登录')
+    ElMessage.warning(ERROR_CODE_MESSAGE[ERROR_CODE.UNAUTHORIZED])
     router.replace({ path: '/login', query: { redirect: router.currentRoute.value.fullPath } })
   }
 }
@@ -42,22 +61,24 @@ function handleUnauthorized() {
 service.interceptors.response.use(
   (response: AxiosResponse<ApiResponse<unknown>>) => {
     const body = response.data
-    if (body.code === 0) {
+    if (body.code === ERROR_CODE.SUCCESS) {
       return response
     }
-    if (body.code === 40101) {
+    // 40001/40102/40302/40901 等业务 code 随 HTTP 200 返回，按 body.code 判断而非 HTTP 状态码
+    if (body.code === ERROR_CODE.UNAUTHORIZED) {
       handleUnauthorized()
     }
-    return Promise.reject(new ApiError(body.code, body.message || '请求失败'))
+    return Promise.reject(new ApiError(body.code, resolveErrorMessage(body.code, body.message)))
   },
   (error: AxiosError<ApiResponse<unknown>>) => {
-    // HTTP 层错误：后端 GlobalExceptionHandler 兜底返回的仍是 ApiResponse 结构
+    // HTTP 层错误（40101→HTTP 401、40301→HTTP 403）：响应体仍是 ApiResponse 结构
     const body = error.response?.data
-    if (body?.code === 40101) {
+    const code = body?.code ?? ERROR_CODE.INTERNAL_ERROR
+    if (code === ERROR_CODE.UNAUTHORIZED) {
       handleUnauthorized()
     }
-    const code = body?.code ?? 50001
-    const message = body?.message || error.message || '网络异常，请稍后重试'
+    // 无响应体（断网/超时）时统一中文文案，避免透出不友好的英文底层错误
+    const message = body ? resolveErrorMessage(body.code, body.message) : '网络异常，请稍后重试'
     return Promise.reject(new ApiError(code, message))
   },
 )

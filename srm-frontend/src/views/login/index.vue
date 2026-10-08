@@ -4,6 +4,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
 import { useUserStore } from '@/stores/user'
 import { ROLE_HOME } from '@/router'
+import { ERROR_CODE } from '@/constants/errorCode'
+import { ApiError } from '@/utils/request'
 import type { RoleType } from '@/types/auth'
 
 /**
@@ -105,7 +107,12 @@ async function handleLogin() {
       typeof route.query.redirect === 'string' ? route.query.redirect : ROLE_HOME[userStore.role as RoleType]
     router.replace(redirect)
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '登录失败，请稍后重试')
+    // 提示文案优先用后端 message（40102 统一返回"用户名或密码错误"，不暴露具体原因）
+    ElMessage.error(error instanceof ApiError ? error.message : '登录失败，请稍后重试')
+    // 40102 登录失败：清空密码便于重新输入
+    if (error instanceof ApiError && error.code === ERROR_CODE.LOGIN_FAILED) {
+      loginForm.password = ''
+    }
   } finally {
     loading.value = false
   }
