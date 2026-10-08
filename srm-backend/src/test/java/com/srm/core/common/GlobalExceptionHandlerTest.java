@@ -8,6 +8,7 @@ import org.springframework.validation.BindingResult;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 
+import java.lang.reflect.Method;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -72,17 +73,18 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
-    void handleAccessDeniedReturns40301() {
-        AccessDeniedException ex = new AccessDeniedException("denied");
-
-        ApiResponse<Void> response = handler.handleAccessDenied(ex);
-
-        assertThat(response.getCode()).isEqualTo(40301);
-        assertThat(response.getMessage()).isEqualTo("无权限");
+    void accessDeniedIsHandledBySecurityLayerNotByAdvice() {
+        // 契约铁律（底座功能契约模块 2/3）：40301 由 Security 层 RestAccessDeniedHandler 处理，
+        // 不经过 GlobalExceptionHandler；advice 中禁止出现 AccessDeniedException 处理器。
+        for (Method method : GlobalExceptionHandler.class.getDeclaredMethods()) {
+            for (Class<?> parameterType : method.getParameterTypes()) {
+                assertThat(parameterType).isNotEqualTo(AccessDeniedException.class);
+            }
+        }
     }
 
     @Test
-    void handleUnknownReturns50001() {
+    void handleUnknownReturns50001() throws Exception {
         RuntimeException ex = new RuntimeException("boom");
 
         ApiResponse<Void> response = handler.handleUnknown(ex);

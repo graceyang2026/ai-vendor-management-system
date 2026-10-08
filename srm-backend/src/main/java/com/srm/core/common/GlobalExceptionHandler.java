@@ -3,19 +3,19 @@ package com.srm.core.common;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.OptimisticLockingFailureException;
-import org.springframework.http.HttpStatus;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
-import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 /**
  * 全局异常处理器：把所有异常统一转换为 ApiResponse（docs/backend-interface-design.md 第 9 节）。
- * 40101/40301（filter 层拒绝）由 Security 层的 RestAuthenticationEntryPoint/RestAccessDeniedHandler
- * 处理，不经此处；@PreAuthorize 方法级校验抛出的 AccessDeniedException 会进入 DispatcherServlet，
- * 此处兜底为 40301 保证语义一致。
+ * 契约铁律（底座功能契约模块 2/3）：40101/40301 由 Security 层的
+ * RestAuthenticationEntryPoint/RestAccessDeniedHandler 唯一产出，不经此处；
+ * 因此 @PreAuthorize 拒绝产生的 AccessDeniedException 不在这里转换响应体，
+ * 而是在 handleUnknown 中原样抛出，交由 ExceptionTranslationFilter → RestAccessDeniedHandler
+ * 输出 403 + 40301，避免被兜底误报 50001。
  */
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -41,14 +41,13 @@ public class GlobalExceptionHandler {
         return ApiResponse.error(ErrorCode.OPTIMISTIC_LOCK_CONFLICT, "数据已被其他操作修改，请刷新后重试");
     }
 
-    @ExceptionHandler(AccessDeniedException.class)
-    @ResponseStatus(HttpStatus.FORBIDDEN)
-    public ApiResponse<Void> handleAccessDenied(AccessDeniedException ex) {
-        return ApiResponse.error(ErrorCode.FORBIDDEN, "无权限");
-    }
-
     @ExceptionHandler(Exception.class)
-    public ApiResponse<Void> handleUnknown(Exception ex) {
+    public ApiResponse<Void> handleUnknown(Exception ex) throws Exception {
+        // 契约：40301 唯一出口是 Security 层 RestAccessDeniedHandler，这里原样重抛使其穿透
+        // DispatcherServlet 冒泡到 ExceptionTranslationFilter，不被兜底吞成 50001。
+        if (ex instanceof AccessDeniedException) {
+            throw ex;
+        }
         log.error("未处理的服务器异常", ex);
         return ApiResponse.error(ErrorCode.INTERNAL_ERROR, "服务器内部错误");
     }
