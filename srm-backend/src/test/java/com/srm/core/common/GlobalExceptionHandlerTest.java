@@ -12,6 +12,7 @@ import java.lang.reflect.Method;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -69,7 +70,17 @@ class GlobalExceptionHandlerTest {
         ApiResponse<Void> response = handler.handleOptimisticLock(ex);
 
         assertThat(response.getCode()).isEqualTo(40901);
-        assertThat(response.getMessage()).isEqualTo("数据已被其他操作修改，请刷新后重试");
+        assertThat(response.getMessage()).isEqualTo("数据已被修改，请刷新后重试");
+    }
+
+    @Test
+    void handleUnknownRethrowsAccessDeniedInsteadOfSwallowingAs50001() {
+        // 核心防坑铁律：AccessDeniedException 必须原样重抛给 Security 层 RestAccessDeniedHandler，
+        // 严禁被兜底截断为 50001。
+        AccessDeniedException ex = new AccessDeniedException("denied");
+
+        assertThatThrownBy(() -> handler.handleUnknown(ex))
+                .isSameAs(ex);
     }
 
     @Test

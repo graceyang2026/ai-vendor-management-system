@@ -69,7 +69,7 @@ class AuthControllerTest {
     @Test
     void loginPassesRequestThroughAndReturnsServiceExceptionAs40102() throws Exception {
         when(authService.login(any(LoginRequest.class)))
-                .thenThrow(new BusinessException(ErrorCode.INVALID_CREDENTIALS, "用户名或密码错误"));
+                .thenThrow(new BusinessException(ErrorCode.LOGIN_FAILED, "用户名或密码错误"));
 
         mockMvc.perform(post("/api/v1/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)

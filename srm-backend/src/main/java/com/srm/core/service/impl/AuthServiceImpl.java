@@ -41,7 +41,7 @@ public class AuthServiceImpl implements AuthService {
                     .role(principal.getRole())
                     .build();
         } catch (AuthenticationException ex) {
-            throw new BusinessException(ErrorCode.INVALID_CREDENTIALS, "用户名或密码错误");
+            throw new BusinessException(ErrorCode.LOGIN_FAILED, "用户名或密码错误");
         }
     }
 }

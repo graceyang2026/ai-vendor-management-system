@@ -80,7 +80,7 @@ class AuthServiceImplTest {
         assertThatThrownBy(() -> authService.login(request()))
                 .isInstanceOf(BusinessException.class)
                 .extracting(e -> ((BusinessException) e).getCode())
-                .isEqualTo(ErrorCode.INVALID_CREDENTIALS);
+                .isEqualTo(ErrorCode.LOGIN_FAILED);
     }
 
     @Test
@@ -90,7 +90,7 @@ class AuthServiceImplTest {
         assertThatThrownBy(() -> authService.login(request()))
                 .isInstanceOf(BusinessException.class)
                 .extracting(e -> ((BusinessException) e).getCode())
-                .isEqualTo(ErrorCode.INVALID_CREDENTIALS);
+                .isEqualTo(ErrorCode.LOGIN_FAILED);
     }
 
     @Test
@@ -100,7 +100,7 @@ class AuthServiceImplTest {
         assertThatThrownBy(() -> authService.login(request()))
                 .isInstanceOf(BusinessException.class)
                 .extracting(e -> ((BusinessException) e).getCode())
-                .isEqualTo(ErrorCode.INVALID_CREDENTIALS);
+                .isEqualTo(ErrorCode.LOGIN_FAILED);
     }
 
     @Test
@@ -112,7 +112,7 @@ class AuthServiceImplTest {
         assertThatThrownBy(() -> authService.login(request()))
                 .isInstanceOf(BusinessException.class)
                 .extracting(e -> ((BusinessException) e).getCode())
-                .isEqualTo(ErrorCode.INVALID_CREDENTIALS);
+                .isEqualTo(ErrorCode.LOGIN_FAILED);
     }
 
     @Test

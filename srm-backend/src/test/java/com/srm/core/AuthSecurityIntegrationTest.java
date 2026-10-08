@@ -112,7 +112,7 @@ class AuthSecurityIntegrationTest {
                         .content("{\"username\":\"staff01\",\"password\":\"Staff@123\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(0))
-                .andExpect(jsonPath("$.message").value("成功"))
+                .andExpect(jsonPath("$.message").value("success"))
                 .andExpect(jsonPath("$.data.token").isNotEmpty())
                 .andExpect(jsonPath("$.data.user_id").value(2))
                 .andExpect(jsonPath("$.data.username").value("staff01"))

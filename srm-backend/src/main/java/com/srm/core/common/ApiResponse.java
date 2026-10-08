@@ -20,10 +20,14 @@ public class ApiResponse<T> {
     }
 
     public static <T> ApiResponse<T> success(T data) {
-        return new ApiResponse<>(ErrorCode.SUCCESS.getValue(), "成功", data);
+        return new ApiResponse<>(ErrorCode.SUCCESS.getValue(), "success", data);
     }
 
     public static <T> ApiResponse<T> error(ErrorCode code, String message) {
         return new ApiResponse<>(code.getValue(), message, null);
+    }
+
+    public static <T> ApiResponse<T> error(int code, String message) {
+        return new ApiResponse<>(code, message, null);
     }
 }

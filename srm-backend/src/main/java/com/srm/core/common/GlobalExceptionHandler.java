@@ -38,7 +38,7 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(OptimisticLockingFailureException.class)
     public ApiResponse<Void> handleOptimisticLock(OptimisticLockingFailureException ex) {
-        return ApiResponse.error(ErrorCode.OPTIMISTIC_LOCK_CONFLICT, "数据已被其他操作修改，请刷新后重试");
+        return ApiResponse.error(ErrorCode.OPTIMISTIC_LOCK_CONFLICT, "数据已被修改，请刷新后重试");
     }
 
     @ExceptionHandler(Exception.class)

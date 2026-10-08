@@ -11,7 +11,7 @@ class ErrorCodeTest {
         assertThat(ErrorCode.SUCCESS.getValue()).isEqualTo(0);
         assertThat(ErrorCode.VALIDATION_FAILED.getValue()).isEqualTo(40001);
         assertThat(ErrorCode.UNAUTHORIZED.getValue()).isEqualTo(40101);
-        assertThat(ErrorCode.INVALID_CREDENTIALS.getValue()).isEqualTo(40102);
+        assertThat(ErrorCode.LOGIN_FAILED.getValue()).isEqualTo(40102);
         assertThat(ErrorCode.FORBIDDEN.getValue()).isEqualTo(40301);
         assertThat(ErrorCode.STATUS_NOT_ALLOWED.getValue()).isEqualTo(40302);
         assertThat(ErrorCode.NOT_FOUND.getValue()).isEqualTo(40401);
