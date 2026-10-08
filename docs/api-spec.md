@@ -390,12 +390,12 @@ interface PerformanceReviewDecisionRequest {
 ```ts
 interface AuditLogResponse {
   id: number;
-  entity_type: 'SUPPLIER' | 'PERFORMANCE_EVALUATION' | 'PERFORMANCE_EVALUATION_DRAFT' | 'LIFECYCLE_REQUEST';
+  entity_type: 'SUPPLIER' | 'PERFORMANCE_EVALUATION' | 'PERFORMANCE_EVALUATION_DRAFT' | 'LIFECYCLE_REQUEST' | 'USER';
   entity_id: number;
   operator_id: number;
   operator_name: string;
   operator_role: Role;
-  action: string;          // SUBMIT / AUDIT_APPROVE / AUDIT_REJECT / REVIEW_APPROVE / REVIEW_REJECT / DECISION_APPROVE / DECISION_REJECT，完整枚举见数据库设计文档第8节
+  action: string;          // SUBMIT / AUDIT_APPROVE / AUDIT_REJECT / REVIEW_APPROVE / REVIEW_REJECT / DECISION_APPROVE / DECISION_REJECT；用户管理（entity_type=USER）：CREATE_USER / UPDATE_USER / ENABLE_USER / DISABLE_USER，完整枚举见数据库设计文档第8节
   old_status?: string;
   new_status?: string;
   result: 'SUCCESS' | 'REJECTED';
@@ -432,6 +432,8 @@ interface UserCreateRequest {
 | GET | `/users` | ADMIN |
 | POST | `/users` | ADMIN |
 | PATCH | `/users/{id}/status` | ADMIN — body: `{ enabled: boolean }` |
+
+> 审计留痕：`POST /users`（`CREATE_USER`）、`PATCH /users/{id}/status`（`ENABLE_USER`/`DISABLE_USER`）及角色/资料修改（`UPDATE_USER`）成功后，均写入 `audit_log`，`entity_type=USER`、`entity_id` 为目标用户 ID、`old_status`/`new_status` 记录 `enabled` 变化（新增时 `old_status` 为空）。
 
 ---
 

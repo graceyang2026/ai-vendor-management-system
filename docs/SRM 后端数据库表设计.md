@@ -381,6 +381,7 @@ SUPPLIER
 PERFORMANCE_EVALUATION
 PERFORMANCE_EVALUATION_DRAFT
 LIFECYCLE_REQUEST
+USER
 ```
 
 ### action
@@ -393,15 +394,21 @@ REVIEW_APPROVE
 REVIEW_REJECT
 DECISION_APPROVE
 DECISION_REJECT
+CREATE_USER
+UPDATE_USER
+ENABLE_USER
+DISABLE_USER
 ```
 
 > `entity_type = LIFECYCLE_REQUEST` 时，`DECISION_APPROVE`/`DECISION_REJECT` 统一表示停用/恢复/淘汰三种申请类型的决策，具体申请类型看关联的 `lifecycle_request.type`，不在 `action` 里再拆分成 `SUSPEND_APPROVE`/`RESUME_APPROVE`/`ELIMINATE_APPROVE` 等。
+>
+> `entity_type = USER` 时，`CREATE_USER`/`UPDATE_USER`/`ENABLE_USER`/`DISABLE_USER` 表示管理员对用户账号的创建/资料角色修改/启用/停用，`entity_id` 为目标用户 ID，`old_status`/`new_status` 记录 `sys_user.enabled` 的变化（新增时 `old_status` 为空）。
 
 ### result
 
 ```text
 SUCCESS
-FAILED
+REJECTED
 ```
 
 ### 索引

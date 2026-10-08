@@ -45,10 +45,11 @@ class AuditLogResponseJsonTest {
     @Test
     void auditEnumsCoverContractValues() {
         assertThat(EntityType.values()).extracting(Enum::name).containsExactly(
-                "SUPPLIER", "PERFORMANCE_EVALUATION", "PERFORMANCE_EVALUATION_DRAFT", "LIFECYCLE_REQUEST");
+                "SUPPLIER", "PERFORMANCE_EVALUATION", "PERFORMANCE_EVALUATION_DRAFT", "LIFECYCLE_REQUEST", "USER");
         assertThat(AuditResult.values()).extracting(Enum::name).containsExactly("SUCCESS", "REJECTED");
         assertThat(AuditAction.values()).extracting(Enum::name).containsExactly(
                 "SUBMIT", "AUDIT_APPROVE", "AUDIT_REJECT", "REVIEW_APPROVE", "REVIEW_REJECT",
-                "DECISION_APPROVE", "DECISION_REJECT");
+                "DECISION_APPROVE", "DECISION_REJECT",
+                "CREATE_USER", "UPDATE_USER", "ENABLE_USER", "DISABLE_USER");
     }
 }
