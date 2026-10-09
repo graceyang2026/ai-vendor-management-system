@@ -1,19 +1,20 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { Document, Lock, User } from '@element-plus/icons-vue'
+import { Document, User } from '@element-plus/icons-vue'
 import { useUserStore } from '@/stores/user'
 import AdminLogView from '@/components/admin/AdminLogView.vue'
+import UserAccountView from '@/components/admin/UserAccountView.vue'
 
 /**
  * 系统管理员控制台（参考 docs/mockups/原型展示-系统管理员v1.1_待评审20260917.html）。
  * 红线：本页仅 ADMIN 可访问，由路由守卫 meta.roles=['ADMIN']（/system/user-list）强制拦截；
- * 左侧菜单在 用户账号管理 / 角色与权限维护 / 系统操作日志 间切换主内容区。
+ * 左侧菜单在 用户账号管理 / 系统操作日志 间切换主内容区（角色与权限维护不列入导航）。
  */
 const router = useRouter()
 const userStore = useUserStore()
 
-type MenuKey = 'user-list' | 'role-list' | 'log-list'
+type MenuKey = 'user-list' | 'log-list'
 
 const activeMenu = ref<MenuKey>('user-list')
 
@@ -53,10 +54,6 @@ async function handleLogout() {
             <el-icon><User /></el-icon>
             <span>用户账号管理</span>
           </el-menu-item>
-          <el-menu-item index="role-list">
-            <el-icon><Lock /></el-icon>
-            <span>角色与权限维护</span>
-          </el-menu-item>
           <el-menu-item index="log-list">
             <el-icon><Document /></el-icon>
             <span>系统操作日志</span>
@@ -67,11 +64,8 @@ async function handleLogout() {
       <!-- 主内容展示区域 -->
       <el-main class="main-content">
         <div class="page-card">
-          <!-- 1. 用户账号管理（占位） -->
+          <!-- 1. 用户账号管理（本步实现：列表 / 新增 / 编辑角色 / 启停） -->
           <template v-if="activeMenu === 'user-list'">
-            <div class="page-header">
-              <span class="page-title">内部用户账号管理</span>
-            </div>
             <el-alert
               title="ADMIN 权限边界：负责用户账号管理与角色分配，原则上强行隔离，不参与任何供应商业务数据的增删改查及审批。"
               type="info"
@@ -79,18 +73,10 @@ async function handleLogout() {
               :closable="false"
               style="margin-bottom: 20px"
             />
-            <el-empty description="用户账号管理模块开发中（下一步实现）" />
+            <UserAccountView />
           </template>
 
-          <!-- 2. 角色与权限维护（占位） -->
-          <template v-else-if="activeMenu === 'role-list'">
-            <div class="page-header">
-              <span class="page-title">系统基础角色与权限配置</span>
-            </div>
-            <el-empty description="角色与权限维护模块开发中（下一步实现）" />
-          </template>
-
-          <!-- 3. 系统操作日志（本步实现） -->
+          <!-- 2. 系统操作日志 -->
           <AdminLogView v-else-if="activeMenu === 'log-list'" />
         </div>
       </el-main>
@@ -144,18 +130,5 @@ async function handleLogout() {
   border-radius: 4px;
   box-shadow: 0 1px 4px rgba(0, 21, 41, 0.08);
   min-height: calc(100vh - 100px);
-}
-.page-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  border-bottom: 1px solid #ebeef5;
-  padding-bottom: 16px;
-  margin-bottom: 20px;
-}
-.page-title {
-  font-size: 18px;
-  font-weight: bold;
-  color: #303133;
 }
 </style>

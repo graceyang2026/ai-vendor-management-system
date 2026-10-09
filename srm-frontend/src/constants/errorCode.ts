@@ -13,6 +13,7 @@
  * | 40401  | NOT_FOUND                  | 200  | 业务层                                | 资源不存在                                     |
  * | 40901  | OPTIMISTIC_LOCK_CONFLICT   | 200  | MyBatis-Plus 乐观锁                   | version 不匹配，需重新拉取详情                 |
  * | 40902  | DUPLICATE_IN_PROGRESS      | 200  | 业务层                                | 重复的在途申请/评价单                          |
+ * | 40903  | USERNAME_DUPLICATE           | 200  | UserServiceImpl                       | 新增用户账号已存在                             |
  * | 50001  | INTERNAL_ERROR             | 200  | GlobalExceptionHandler                | 服务器内部错误                                 |
  */
 export const ERROR_CODE = {
@@ -25,6 +26,7 @@ export const ERROR_CODE = {
   NOT_FOUND: 40401,
   OPTIMISTIC_LOCK_CONFLICT: 40901,
   DUPLICATE_IN_PROGRESS: 40902,
+  USERNAME_DUPLICATE: 40903,
   INTERNAL_ERROR: 50001,
 } as const
 
@@ -43,5 +45,6 @@ export const ERROR_CODE_MESSAGE: Record<number, string> = {
   [ERROR_CODE.NOT_FOUND]: '资源不存在',
   [ERROR_CODE.OPTIMISTIC_LOCK_CONFLICT]: '数据已被其他人修改，请刷新后重试',
   [ERROR_CODE.DUPLICATE_IN_PROGRESS]: '已存在在途的申请/评价单，请勿重复提交',
+  [ERROR_CODE.USERNAME_DUPLICATE]: '账号已存在，请更换工号或账号',
   [ERROR_CODE.INTERNAL_ERROR]: '服务器内部错误，请稍后重试',
 }

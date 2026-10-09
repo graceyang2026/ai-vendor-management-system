@@ -93,6 +93,9 @@ const request = {
   put<T>(url: string, data?: object): Promise<ApiResponse<T>> {
     return service.put<ApiResponse<T>>(url, data).then((res) => res.data)
   },
+  patch<T>(url: string, data?: object): Promise<ApiResponse<T>> {
+    return service.patch<ApiResponse<T>>(url, data).then((res) => res.data)
+  },
   delete<T>(url: string, params?: object): Promise<ApiResponse<T>> {
     return service.delete<ApiResponse<T>>(url, { params }).then((res) => res.data)
   },
