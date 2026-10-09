@@ -17,11 +17,12 @@ class ErrorCodeTest {
         assertThat(ErrorCode.NOT_FOUND.getValue()).isEqualTo(40401);
         assertThat(ErrorCode.OPTIMISTIC_LOCK_CONFLICT.getValue()).isEqualTo(40901);
         assertThat(ErrorCode.DUPLICATE_IN_PROGRESS.getValue()).isEqualTo(40902);
+        assertThat(ErrorCode.USERNAME_DUPLICATE.getValue()).isEqualTo(40903);
         assertThat(ErrorCode.INTERNAL_ERROR.getValue()).isEqualTo(50001);
     }
 
     @Test
     void errorCodeCountMatchesContract() {
-        assertThat(ErrorCode.values()).hasSize(10);
+        assertThat(ErrorCode.values()).hasSize(11);
     }
 }

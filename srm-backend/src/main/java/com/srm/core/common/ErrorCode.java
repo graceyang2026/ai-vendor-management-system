@@ -14,6 +14,7 @@ public enum ErrorCode {
     NOT_FOUND(40401),
     OPTIMISTIC_LOCK_CONFLICT(40901),
     DUPLICATE_IN_PROGRESS(40902),
+    USERNAME_DUPLICATE(40903),
     INTERNAL_ERROR(50001);
 
     private final int value;

@@ -431,7 +431,15 @@ interface UserCreateRequest {
 |---|---|---|
 | GET | `/users` | ADMIN |
 | POST | `/users` | ADMIN |
-| PATCH | `/users/{id}/status` | ADMIN — body: `{ enabled: boolean }` |
+| PUT | `/users/{id}` | ADMIN — body: `UserUpdateRequest`（仅可改 `real_name`/`role`；出现 `username`/`password` 字段 → 40001 拒绝；改自己角色 → 40302） |
+| PATCH | `/users/{id}/status` | ADMIN — body: `{ enabled: boolean }`（停用自己 → 40302；重复设置幂等） |
+
+```ts
+interface UserUpdateRequest {
+  real_name?: string;
+  role?: Role;
+}
+```
 
 > 审计留痕：`POST /users`（`CREATE_USER`）、`PATCH /users/{id}/status`（`ENABLE_USER`/`DISABLE_USER`）及角色/资料修改（`UPDATE_USER`）成功后，均写入 `audit_log`，`entity_type=USER`、`entity_id` 为目标用户 ID、`old_status`/`new_status` 记录 `enabled` 变化（新增时 `old_status` 为空）。
 
@@ -464,4 +472,5 @@ interface UserCreateRequest {
 | 40401 | 资源不存在 |
 | 40901 | 并发冲突（乐观锁版本不匹配） |
 | 40902 | 业务冲突（重复的在途申请/评价单） |
+| 40903 | 用户名已存在（用户管理；含被逻辑删除占用的用户名） |
 | 50001 | 服务器内部错误 |

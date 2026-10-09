@@ -352,6 +352,10 @@ class UserController {
     @PreAuthorize("hasRole('ADMIN')")
     ApiResponse<UserResponse> create(@RequestBody @Valid UserCreateRequest request);
 
+    /** 仅可改 real_name/role；出现 username/password → 40001；改自己角色 → 40302；不存在 → 40401；成功后审计 UPDATE_USER */
+    @PreAuthorize("hasRole('ADMIN')")
+    ApiResponse<UserResponse> update(@PathVariable Long id, @RequestBody @Valid UserUpdateRequest request);
+
     @PreAuthorize("hasRole('ADMIN')")
     ApiResponse<Void> updateStatus(@PathVariable Long id, @RequestBody @Valid UserStatusUpdateRequest request);
 }
