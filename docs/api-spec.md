@@ -1,6 +1,18 @@
 # SRM MVP 前后端 API 契约 (v1)
 
-> 依据 `docs/TDD.docx`（供应商管理系统设计文档 V1.3，基线 2026/09/29）与补充需求书 V1.5 制定。本文档是 `srm-backend/` 与 `srm-frontend/` 的唯一共同事实来源（single source of truth）；任何接口变更必须先改这份文档再改代码。
+> 依据 `docs/TDD.docx`（供应商管理系统设计文档 V1.3，基线 2026-09-29）与补充需求书 V1.5 制定。本文档是 `srm-backend/` 与 `srm-frontend/` 的唯一共同事实来源（single source of truth）；任何接口变更必须先改这份文档再改代码。
+
+## 版本修订记录
+
+> 铁律：本文档任何契约变更均须先在此登记一行，再改代码；未登记的改动视为无效契约。表头沿用项目统一标准（与 `docs/TDD.docx`、需求规格说明书 V1.5 的「版本修订记录」表一致）。
+
+| 编号 | 日期 | 版本 | 建立/修订人 | 建立/修订内容 |
+|---|---|---|---|---|
+|  | 2026-09-29 | V1.0 | Qoder | 初始版本：登录/RBAC/供应商生命周期/绩效/审计接口全量（依据 TDD V1.3 + 补充需求书 V1.5） |
+|  | 2026-10-10 | V1.1 | Qoder | 绩效在途唯一性补 DB 兜底说明（40902）；`APPROVE` 描述更正为“同表归档态，无独立历史表”；清理草稿表/草稿实体残留表述（用户裁决：方案 A 一步式无草稿） |
+|  | 2026-10-10 | V1.2 | Qoder | `tax_no` 冲突返回码定案为 `40902`（含生成列释放语义）；40902 释义扩为通用“业务冲突”族（用户裁决：方案 1，不新增码） |
+|  | 2026-10-10 | V1.3 | Qoder | §2 建档校验规则重写为可落地口径：`tax_no` GB32100 十八位正则、`contact_phone` 手机号正则、名称类字段非空与长度、逐字段固定 message；格式先行于唯一性；业务错随 HTTP 200 传输（用户给定直接可落地标准） |
+|  | 2026-10-10 | V1.4 | Qoder | `contact_name` 长度上限由 50 放宽至 64（用户裁决：扩列宽；配套 DDL `VARCHAR(50)`→`VARCHAR(100)`，归后端实现任务卡） |
 
 ## 0. 全局约定
 
@@ -121,7 +133,26 @@ interface SupplierCreateRequest {
 type SupplierUpdateRequest = Partial<SupplierCreateRequest>;
 ```
 
-**校验规则**：`name`/`tax_no`/`type`/`contact_name`/`contact_phone`/`effective_date`/`expiry_date` 必填；`tax_no` 全局唯一（数据库唯一索引 + 应用层预检）；`contact_phone` 格式校验；`contact_email` 若填写需符合邮箱格式。
+**校验规则**（裁决 20261010，口径来自需求规格说明书 V1.5「数据校验机制」；**后端 Bean Validation（`@NotBlank`/`@Pattern`）与前端表单正则必须逐字同源**，不得两侧各写一套）：
+
+失败统一返回 `code = 40001`（枚举名以已实现代码为准：`ErrorCode.VALIDATION_FAILED`；详见下方“传输方式”），`message` 用本表固定文案。
+
+| 字段 | 规则 | 正则 | 失败 message |
+|---|---|---|---|
+| `name` | 必填；trim 后非空且不得为纯空格；**2 ~ 64** 字符 | `^\S.{0,62}\S$`（首尾非空白，含中间共 2~64 字符） | `供应商名称格式不合法（不得为空格且长度需为2~64字符）` |
+| `tax_no` | 必填；严格符合 **GB 32100 十八位** 统一社会信用代码；字符集为数字 + 大写字母，**不含 I/O/Z/S/V** | `^[0-9A-HJ-NPQRTUWXY]{18}$` | `统一社会信用代码格式不合法（必须为18位有效字符）` |
+| `type` | 必填；取值必须在 `SupplierType` 枚举内 | — | `供应商类型不合法` |
+| `contact_name` | 必填；trim 后非空且不得为纯空格；**2 ~ 64** 字符 | 同 `name` | `联系人姓名格式不合法（不得为空格且长度需为2~64字符）` |
+| `contact_phone` | 必填；中国大陆标准 **11 位手机号**（MVP 暂不强求座机号，聚焦主流） | `^1[3-9]\d{9}$` | `联系电话格式不合法（必须为11位有效手机号）` |
+| `contact_email` | 选填；一旦填写必须合法邮箱格式 | 常规邮箱格式 | `联系邮箱格式不合法` |
+| `effective_date` / `expiry_date` | 必填；`yyyy-MM-dd`；`expiry_date` 必须晚于 `effective_date` | — | `日期格式不合法或失效日期早于生效日期` |
+| `address` / `remark` | 选填，无格式校验 | — | — |
+
+> 长度上限取值说明：`name` 与 `contact_name` 均为 **2 ~ 64** 字符（用户裁决 20261010：`contact_name` 按统一口径放宽到 64，不再以旧列宽 50 为限）。配套 DDL：`supplier.contact_name` 由 `VARCHAR(50)` 扩为 **`VARCHAR(100)`**（与同表 `contact_email VARCHAR(100)` 对齐，为业务上限 64 留出余量）——属 `schema.sql` 变更，已归入后端实现任务卡，**未落地前契约先行**，校验与写库不得出现 50/64 两套口径。`tax_no` 18 位落在 `VARCHAR(50)` 内。校验在 Controller 入参层一次完成，Service 不重复校验；`PUT /suppliers/{id}` 沿用同一套规则（仅对提交的字段生效）。
+
+**唯一性**：`tax_no` 全局唯一（数据库唯一索引 + 应用层预检，撞未删除供应商的已有税号返回 `40902`；被逻辑删除供应商的税号因生成列 `tax_no_active` 置 NULL 而不占用，允许重新建档）——格式校验（`40001`）先行，唯一性校验（`40902`）在后。
+
+**传输方式**：本节所有 `40001` 失败**仍随 HTTP 200 返回**，错信息在统一响应体的 `code`/`message` 里（已实现：`GlobalExceptionHandler` 直接返回 `ApiResponse`，`@ExceptionHandler(MethodArgumentNotValidException.class)` 取首个字段错误 message；前端 `utils/request.ts` 拦截器同样按 `body.code` 判失败）。本契约不以 HTTP 状态码传递业务错。
 
 ### 接口
 
@@ -449,6 +480,6 @@ interface UserUpdateRequest {
 | 40302 | 当前状态不允许该操作（如非草稿态编辑、非本人操作） |
 | 40401 | 资源不存在 |
 | 40901 | 并发冲突（乐观锁版本不匹配） |
-| 40902 | 业务冲突（重复的在途申请/评价单） |
+| 40902 | 业务冲突（重复的在途申请/评价单/税号唯一性冲突） |
 | 40903 | 用户名已存在（用户管理；含被逻辑删除占用的用户名） |
 | 50001 | 服务器内部错误 |

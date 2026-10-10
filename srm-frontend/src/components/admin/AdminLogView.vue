@@ -3,23 +3,28 @@ import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { getAdminLogListApi } from '@/api/admin-log'
 import { ApiError } from '@/utils/request'
-import { ADMIN_ACTION_OPTIONS, ADMIN_PENDING_ACTION } from '@/types/admin-log'
 import type { AuditLogRecord } from '@/types/audit-log'
 import {
+  ADMIN_ACTION_OPTIONS,
+  AUDIT_ACTION,
   formatCreatedAt,
   formatOperator,
+  getActionLabel,
+  getActionTagType,
   getEntityLabelOrId,
   getStatusLabel,
   getStatusTagType,
-  resolveActionLabel,
-  resolveActionTagType,
 } from '@/constants/auditLogView'
 
 /**
  * 系统管理操作与权限审计日志（ADMIN 维度，entity_type=USER）。
  * 契约收敛说明：原型自造的 action_type / target_object / detail 后端不存在，
- * 分别对应真实字段 action / entity_id(+entity_name) / comment；
- * 用户管理动作码后端 AuditAction 尚未定义（见 ADMIN_PENDING_ACTION），接入前走示例数据兜底。
+ * 分别对应真实字段 action / entity_id(+entity_name) / comment。
+ * 动作码一律用后端 AuditAction 用户域真实码（CREATE_USER / UPDATE_USER / ENABLE_USER / DISABLE_USER），
+ * 中文与颜色由 @/constants/auditDictionary 映射，组件内不写中文动作名；
+ * 状态列按后端 UserServiceImpl 原值传布尔字符串 "true"/"false"（UPDATE_USER 不改状态故两列留空，
+ * 变更明细落 comment，见 docs/用户管理接口规格增补稿.md §3.2~§3.5）。
+ * 下方 DEMO_LOGS 仅为接口异常时的兜底示例数据，形态与后端真实返回保持一致。
  */
 const DEMO_LOGS: AuditLogRecord[] = [
   {
@@ -29,9 +34,9 @@ const DEMO_LOGS: AuditLogRecord[] = [
     operator_id: 1,
     operator_name: '超级管理员',
     operator_role: 'ADMIN',
-    action: ADMIN_PENDING_ACTION.CREATE_USER,
+    action: AUDIT_ACTION.CREATE_USER,
     old_status: null,
-    new_status: 'ENABLED',
+    new_status: 'true',
     result: 'SUCCESS',
     comment: '成功创建业务员账号，分配角色：业务员 (Staff)',
     created_at: '2026-09-16T08:30:15',
@@ -44,9 +49,9 @@ const DEMO_LOGS: AuditLogRecord[] = [
     operator_id: 1,
     operator_name: '超级管理员',
     operator_role: 'ADMIN',
-    action: ADMIN_PENDING_ACTION.CREATE_USER,
+    action: AUDIT_ACTION.CREATE_USER,
     old_status: null,
-    new_status: 'ENABLED',
+    new_status: 'true',
     result: 'SUCCESS',
     comment: '成功创建审计员账号，分配角色：审计员 (Auditor)',
     created_at: '2026-09-16T08:32:00',
@@ -59,9 +64,9 @@ const DEMO_LOGS: AuditLogRecord[] = [
     operator_id: 1,
     operator_name: '超级管理员',
     operator_role: 'ADMIN',
-    action: ADMIN_PENDING_ACTION.DISABLE_USER,
-    old_status: 'ENABLED',
-    new_status: 'DISABLED',
+    action: AUDIT_ACTION.DISABLE_USER,
+    old_status: 'true',
+    new_status: 'false',
     result: 'SUCCESS',
     comment: '将账号状态由【启用】变更为【停用】',
     created_at: '2026-09-16T09:10:45',
@@ -74,11 +79,11 @@ const DEMO_LOGS: AuditLogRecord[] = [
     operator_id: 1,
     operator_name: '超级管理员',
     operator_role: 'ADMIN',
-    action: ADMIN_PENDING_ACTION.UPDATE_ROLE,
-    old_status: 'STAFF',
-    new_status: 'AUDITOR',
+    action: AUDIT_ACTION.UPDATE_USER,
+    old_status: null,
+    new_status: null,
     result: 'SUCCESS',
-    comment: '角色由【业务员 (Staff)】变更修改为【审计员 (Auditor)】',
+    comment: '角色调整: STAFF→AUDITOR（角色有变更，需重新登录后生效）',
     created_at: '2026-09-17T10:05:20',
     entity_name: 'staff02 (王五)',
   },
@@ -89,9 +94,9 @@ const DEMO_LOGS: AuditLogRecord[] = [
     operator_id: 1,
     operator_name: '超级管理员',
     operator_role: 'ADMIN',
-    action: ADMIN_PENDING_ACTION.ENABLE_USER,
-    old_status: 'DISABLED',
-    new_status: 'ENABLED',
+    action: AUDIT_ACTION.ENABLE_USER,
+    old_status: 'false',
+    new_status: 'true',
     result: 'SUCCESS',
     comment: '账号状态从【停用】变更为【启用】',
     created_at: '2026-09-17T14:42:08',
@@ -104,11 +109,11 @@ const DEMO_LOGS: AuditLogRecord[] = [
     operator_id: 1,
     operator_name: '超级管理员',
     operator_role: 'ADMIN',
-    action: ADMIN_PENDING_ACTION.UPDATE_ROLE,
-    old_status: 'AUDITOR',
-    new_status: 'STAFF',
+    action: AUDIT_ACTION.UPDATE_USER,
+    old_status: null,
+    new_status: null,
     result: 'SUCCESS',
-    comment: '角色由【审计员 (Auditor)】变更修改为【业务员 (Staff)】',
+    comment: '角色调整: AUDITOR→STAFF（角色有变更，需重新登录后生效）',
     created_at: '2026-09-18T09:15:33',
     entity_name: 'staff01 (杨伟)',
   },
@@ -261,7 +266,7 @@ onMounted(loadLogs)
       </el-table-column>
       <el-table-column label="操作类型" width="140">
         <template #default="scope">
-          <el-tag size="small" :type="resolveActionTagType(scope.row.action)">{{ resolveActionLabel(scope.row.action) }}</el-tag>
+          <el-tag size="small" :type="getActionTagType(scope.row.action)">{{ getActionLabel(scope.row.action) }}</el-tag>
         </template>
       </el-table-column>
       <el-table-column label="目标账号/对象" width="170">

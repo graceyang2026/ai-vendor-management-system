@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS supplier (
     name                    VARCHAR(200) NOT NULL                COMMENT '供应商名称',
     tax_no                  VARCHAR(50)  NOT NULL                COMMENT '统一社会信用代码',
     type                    VARCHAR(50)  NULL                    COMMENT '供应商类型',
-    contact_name            VARCHAR(50)  NULL                    COMMENT '联系人',
+    contact_name            VARCHAR(100) NULL                    COMMENT '联系人',
     contact_phone           VARCHAR(30)  NULL                    COMMENT '联系电话',
     contact_email           VARCHAR(100) NULL                    COMMENT '联系邮箱',
     address                 VARCHAR(500) NULL                    COMMENT '地址',

@@ -1,5 +1,15 @@
 # SRM 后端数据库表设计
 
+## 版本修订记录
+
+> 铁律：本文档是表结构/枚举取值的权威源。任何字段或生成列变更须先在此登记，再改 `schema.sql`（DDL 变更本身归后端实现任务卡）。表头沿用项目统一标准（与 `docs/TDD.docx`、需求规格说明书 V1.5 的「版本修订记录」表一致）。
+
+| 编号 | 日期 | 版本 | 建立/修订人 | 建立/修订内容 |
+|---|---|---|---|---|
+|  | 2026-09-30 | V1.0 | Qoder | 初始版本：登录安全、权限、审计、供应商、绩效等全量表结构（对应同名 DOCX，依据 TDD V1.3） |
+|  | 2026-10-10 | V1.1 | Qoder | §5 新增“在途唯一性”虚拟生成列 + 唯一键；§7 `lifecycle_request` 同法封堵；§6 绩效草稿表废弃说明；§8 动作码与 `AuditAction` 对齐（用户裁决：G1 封 40902 并发破功 / 方案 A 无草稿） |
+|  | 2026-10-10 | V1.2 | Qoder | §3 `supplier.contact_name` 由 VARCHAR(50) 扩为 VARCHAR(100)，支撑契约侧 2~64 字符名称上限（用户裁决：扩列宽）；`schema.sql` 落地归后端实现任务卡，未执行前本文档为目标态 |
+
 ## 1. 数据库说明
 
 - 数据库：MySQL 8.x
@@ -58,7 +68,7 @@ INDEX(enabled)
 | name | VARCHAR(200) | 是 | - | 供应商名称 |
 | tax_no | VARCHAR(50) | 是 | - | 统一社会信用代码 |
 | type | VARCHAR(50) | 否 | NULL | 供应商类型 |
-| contact_name | VARCHAR(50) | 否 | NULL | 联系人 |
+| contact_name | VARCHAR(100) | 否 | NULL | 联系人（2026-10-10 由 VARCHAR(50) 扩宽；业务校验上限 64 字符，见 api-spec 第 2 节） |
 | contact_phone | VARCHAR(30) | 否 | NULL | 联系电话 |
 | contact_email | VARCHAR(100) | 否 | NULL | 联系邮箱 |
 | address | VARCHAR(500) | 否 | NULL | 地址 |

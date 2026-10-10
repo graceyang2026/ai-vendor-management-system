@@ -4,6 +4,18 @@
 >
 > 业务规则以 `.qoder/rules.md` 第 4 节为准，字段/接口路径以 `docs/api-spec.md` 为准；本文档若与两者冲突，以那两个文件为准，需回来同步修订本文档。
 
+## 版本修订记录
+
+> 铁律：本文档任何设计变更均须先在此登记一行，再改代码；与已实现代码不一致时，**以已实现代码为准并回写本文档**。表头沿用项目统一标准（与 `docs/TDD.docx`、需求规格说明书 V1.5 的「版本修订记录」表一致）。
+
+| 编号 | 日期 | 版本 | 建立/修订人 | 建立/修订内容 |
+|---|---|---|---|---|
+|  | 2026-09-29 | V1.0 | Qoder | 初始版本：包结构 / 实体 / Mapper / Service / Controller / DTO 签名蓝图（依据 TDD V1.3） |
+|  | 2026-10-10 | V1.1 | Qoder | §4.7 `UserService` 按已实现代码重写：补 `update` 方法，`updateStatus` 签名含 `UserPrincipal`（代码为权威 `service/UserService.java`） |
+|  | 2026-10-10 | V1.2 | Qoder | §2.6 动作码对齐 `AuditAction` 全 11 码；新增 §4.8 `FileService`、§5 `FileController`、§7 `FileUploadResponse` |
+|  | 2026-10-10 | V1.3 | Qoder | §4.2 `create` 补 `tax_no` 双层唯一性校验与 `DuplicateKeyException`→40902 转译口径（用户裁决：方案 1） |
+|  | 2026-10-10 | V1.4 | Qoder | §4.2 `create` 补字段格式校验归属：Controller 层 Bean Validation 与 api-spec §2 正则同源，格式（40001）先行、唯一性（40902）在后，Service 不重复校验（用户给定直接可落地标准） |
+
 ---
 
 ## 1. 包结构总览
@@ -191,7 +203,7 @@ public interface SupplierService {
 }
 ```
 
-- `create`：只允许 `STAFF`，落地状态 `DRAFT`，`created_by` = operator.id。
+- `create`：只允许 `STAFF`，落地状态 `DRAFT`，`created_by` = operator.id。`tax_no` 唯一性双层校验：应用层预检（`tax_no` 相同且 `deleted = 0` 的记录已存在）→ `BusinessException(DUPLICATE_IN_PROGRESS)`（`40902`，友好报错）；并发穿透预检时由 DB `UNIQUE(tax_no_active)` 兜底，Service 捕获 `DuplicateKeyException` 同样转译 `40902`（裁决 20261010：税号冲突归 `40902` 业务冲突族，见 api-spec 第 2 节校验规则 + 错误码表）。逻辑删除供应商的 `tax_no_active` 为 NULL 不占键位，允许重新沿用该税号。字段格式校验由 Controller 层 Bean Validation 承担（`@NotBlank`/`@Pattern`，正则与 api-spec 第 2 节校验规则表逐字同源）：格式非法 → `VALIDATION_FAILED`（`40001`）先行，唯一性冲突 → `40902` 在后，Service 不重复校验。
 - `update`：只允许状态 `DRAFT`/`RETURNED` 且 `operator.id == supplier.createdBy`，否则抛 `BusinessException(ErrorCode.STATUS_NOT_ALLOWED)`（→ HTTP 层映射 `40302`）。
 - `submit`：校验至少存在一条未过期的 `BUSINESS_LICENSE` 资质，否则 `ErrorCode.VALIDATION_FAILED`（`40001`）；成功后调用 `SupplierStateMachine.transition(...)` 并写 `AuditLog`。
 - `audit`：`version` 不匹配 → `ErrorCode.OPTIMISTIC_LOCK_CONFLICT`（`40901`）；`decision=REJECT` 但 `comment` 为空 → `40001`。

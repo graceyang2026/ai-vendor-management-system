@@ -14,6 +14,9 @@
  * - AuditAction.java（11 个动作码 = 业务域 SUBMIT / AUDIT_* / REVIEW_* / DECISION_* 七码
  *   + 用户域 CREATE_USER/UPDATE_USER/ENABLE_USER/DISABLE_USER 四码，entity_type=USER，仅 ADMIN 触发）
  * - AuditResult.java（SUCCESS / REJECTED）
+ * - UserServiceImpl.java（用户域 old_status / new_status 落 enabled 的标准布尔字符串
+ *   "true"/"false"，见 docs/用户管理接口规格增补稿.md §3.5 约定：CREATE_USER 时 old 为空、
+ *   UPDATE_USER 两列均空且变更明细写 comment）。后端只传布尔原值，中文由本文件映射。
  * - api-spec 第 2/3/4 节：SupplierStatus / LifecycleRequestStatus / EvaluationStatus
  */
 
@@ -91,6 +94,10 @@ export const ENTITY_TYPE_LABEL_CN: Record<EntityTypeCode, string> = {
   [ENTITY_TYPE.USER]: '用户账号',
 }
 
+/**
+ * 动作中文（后端 AuditAction 全 11 码的唯一文案权威源，管理日志页亦走本表）。
+ * UPDATE_USER 覆盖"资料修改 + 角色调整"两类变动（后端不单列角色动作码，明细写 comment）。
+ */
 export const ACTION_LABEL_CN: Record<AuditActionCode, string> = {
   [AUDIT_ACTION.SUBMIT]: '提交送审',
   [AUDIT_ACTION.AUDIT_APPROVE]: '准入审核通过',
@@ -99,7 +106,7 @@ export const ACTION_LABEL_CN: Record<AuditActionCode, string> = {
   [AUDIT_ACTION.REVIEW_REJECT]: '绩效复核驳回',
   [AUDIT_ACTION.DECISION_APPROVE]: '状态变更批准',
   [AUDIT_ACTION.DECISION_REJECT]: '状态变更驳回',
-  // 用户域四码：中文口径与 types/admin-log.ts 既有 ADMIN_ACTION_LABEL_CN 保持一致，不另立说法
+  // 用户域四码（entity_type=USER，仅 ADMIN 触发）
   [AUDIT_ACTION.CREATE_USER]: '新增用户',
   [AUDIT_ACTION.UPDATE_USER]: '修改用户资料',
   [AUDIT_ACTION.ENABLE_USER]: '启用账号',
@@ -145,15 +152,20 @@ const EVALUATION_STATUS_LABEL: Record<string, string> = {
   RETURNED: '已驳回重打分',
 }
 
-/** 非业务流程状态码：账号启用/停用、空值占位、角色码（调整用户角色场景）。 */
+/**
+ * 非业务流程状态码：账号启用/停用、空值占位。
+ * - 'true' / 'false'：用户域审计的真实口径 —— 后端 UserServiceImpl 用 String.valueOf(enabled)
+ *   写 old_status / new_status（CREATE_USER 的 new_status="true"、启停为 "true"/"false"，
+ *   见 docs/用户管理接口规格增补稿.md §3.2/§3.3/§3.5）。后端只传布尔原值，中文一律前端映射。
+ * - ENABLED / DISABLED：前端账号列表页的派生展示码（types/user.ts USER_STATUS，接口仍是 boolean），
+ *   与启停口径同文案。
+ */
 const STATUS_LABEL_COMMON: Record<string, string> = {
+  true: '启用',
+  false: '停用',
   ENABLED: '启用',
   DISABLED: '停用',
   NONE: '无',
-  // 调整用户角色场景：audit_log.old_status / new_status 落角色码
-  ADMIN: '系统管理员',
-  STAFF: '业务员',
-  AUDITOR: '审计员',
 }
 
 /* ------------------------------------------------------------------ el-tag 颜色 */
@@ -166,9 +178,9 @@ const ACTION_TAG_TYPE: Record<AuditActionCode, ElTagType> = {
   [AUDIT_ACTION.REVIEW_REJECT]: 'danger',
   [AUDIT_ACTION.DECISION_APPROVE]: 'warning',
   [AUDIT_ACTION.DECISION_REJECT]: 'info',
-  // 用户域四码颜色从旧沿用 constants/auditLogView.ts 既有 ADMIN_ACTION_TAG_TYPE 定义
-  // （CREATE_USER/ENABLE_USER=success、DISABLE_USER=danger），保证同一动作在管理页与其他日志页同色；
-  // UPDATE_USER 为新增码（后端资料与角色调整同用此码，见 docs/用户管理接口规格增补稿 §3.4），取中性 primary。
+  // 用户域四码颜色沿用管理页既有口径（CREATE_USER/ENABLE_USER=success、DISABLE_USER=danger），
+  // 保证同一动作在管理页与其他日志页同色；
+  // UPDATE_USER 覆盖资料与角色调整（见 docs/用户管理接口规格增补稿.md §3.4），取中性 primary。
   [AUDIT_ACTION.CREATE_USER]: 'success',
   [AUDIT_ACTION.UPDATE_USER]: 'primary',
   [AUDIT_ACTION.ENABLE_USER]: 'success',
@@ -179,6 +191,7 @@ const ACTION_TAG_TYPE: Record<AuditActionCode, ElTagType> = {
  * 状态色映射（沿用原型语义，键换成后端枚举码）：
  * 草稿/停用→info、待审核→warning、正常合作→success、待修改/淘汰→danger。
  * 跨域同码值（APPROVED/RETURNED/PENDING_REVIEW）颜色语义一致，故合并为一张表。
+ * 账号启停（含后端布尔原值 'true'/'false' 与前端派生码 ENABLED/DISABLED）：启用 success、停用 info。
  */
 const STATUS_TAG_TYPE: Record<string, ElTagType> = {
   [SUPPLIER_STATUS.DRAFT]: 'info',
@@ -190,12 +203,11 @@ const STATUS_TAG_TYPE: Record<string, ElTagType> = {
   [LIFECYCLE_REQUEST_STATUS.PENDING]: 'warning',
   [LIFECYCLE_REQUEST_STATUS.APPROVED]: 'success',
   [LIFECYCLE_REQUEST_STATUS.REJECTED]: 'danger',
+  true: 'success',
+  false: 'info',
   ENABLED: 'success',
   DISABLED: 'info',
   NONE: 'info',
-  ADMIN: 'danger',
-  STAFF: 'success',
-  AUDITOR: 'warning',
 }
 
 /* ------------------------------------------------------------------ 解析函数（未知码不报错、不显红） */
@@ -219,6 +231,7 @@ export function getActionTagType(code?: string | null): ElTagType {
 /**
  * 状态中文：按 entity_type 选域口径（生命周期申请/绩效评价单的码值与供应商域重名但语义不同），
  * 未传 entity_type 时按 供应商域 → 生命周期 → 绩效 → 共用表 顺序兜底，最终原样回显未知码。
+ * 用户域（entity_type=USER）走兜底链落到共用表，故后端布尔原值 'true'/'false' 在此译为 启用/停用。
  */
 export function getStatusLabel(code?: string | null, entityType?: string | null): string {
   if (!code) return '-'
@@ -284,8 +297,20 @@ export const AUDITOR_ACTION_OPTIONS: ActionOption[] = toActionOptions([
   AUDIT_ACTION.REVIEW_REJECT,
 ])
 
+/**
+ * 管理员（ADMIN）维度动作筛选：后端 AuditAction 用户域真实码四选一（entity_type=USER）。
+ * UPDATE_USER 同时覆盖"修改资料"与"调整角色"（后端无独立角色动作码，变动明细落 comment，
+ * 见 docs/用户管理接口规格增补稿.md §3.4；前端曾自造的角色占位码已删除）。
+ */
+export const ADMIN_ACTION_OPTIONS: ActionOption[] = toActionOptions([
+  AUDIT_ACTION.CREATE_USER,
+  AUDIT_ACTION.UPDATE_USER,
+  AUDIT_ACTION.ENABLE_USER,
+  AUDIT_ACTION.DISABLE_USER,
+])
+
 /** 后端 AuditAction 全量动作筛选（业务员日志页展示己方供应商上的审批动作时使用）。 */
 export const ALL_ACTION_OPTIONS: ActionOption[] = toActionOptions(Object.values(AUDIT_ACTION))
 
-/** 业务员（STAFF）自身可触发的动作：后端目前仅 SUBMIT，档案 CRUD 等动作待枚举扩展；用户域四码属 ADMIN，不进本筛选。 */
+/** 业务员（STAFF）自身可触发的动作：后端当前仅 SUBMIT，档案 CRUD 等动作属后端枚举扩展事项；用户域四码属 ADMIN，不进本筛选。 */
 export const STAFF_ACTION_OPTIONS: ActionOption[] = toActionOptions([AUDIT_ACTION.SUBMIT])
