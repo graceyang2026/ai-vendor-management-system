@@ -11,7 +11,8 @@
  *   权威源：docs/SRM 后端数据库表设计.md 第 8 节 entity_type + docs/api-spec.md 第 5 节。
  *   绩效评价的草稿对象类型已随一步式提交契约删除（表设计第 6 节裁决 20261010），
  *   后端 EntityType.java 残留枚举值归后端清理任务卡，前端不再映射。
- * - AuditAction.java（7 个动作码）
+ * - AuditAction.java（11 个动作码 = 业务域 SUBMIT / AUDIT_* / REVIEW_* / DECISION_* 七码
+ *   + 用户域 CREATE_USER/UPDATE_USER/ENABLE_USER/DISABLE_USER 四码，entity_type=USER，仅 ADMIN 触发）
  * - AuditResult.java（SUCCESS / REJECTED）
  * - api-spec 第 2/3/4 节：SupplierStatus / LifecycleRequestStatus / EvaluationStatus
  */
@@ -25,7 +26,7 @@ export const ENTITY_TYPE = {
 } as const
 export type EntityTypeCode = (typeof ENTITY_TYPE)[keyof typeof ENTITY_TYPE]
 
-/** audit_log.action —— 后端 AuditAction 枚举（已定义部分）。 */
+/** audit_log.action —— 后端 AuditAction 枚举全 11 码（值与枚举 name() 逐字一致）。 */
 export const AUDIT_ACTION = {
   SUBMIT: 'SUBMIT',
   AUDIT_APPROVE: 'AUDIT_APPROVE',
@@ -34,6 +35,11 @@ export const AUDIT_ACTION = {
   REVIEW_REJECT: 'REVIEW_REJECT',
   DECISION_APPROVE: 'DECISION_APPROVE',
   DECISION_REJECT: 'DECISION_REJECT',
+  // —— 用户域动作（entity_type=USER，后端 AuditAction.java 已定义，操作者仅 ADMIN）——
+  CREATE_USER: 'CREATE_USER',
+  UPDATE_USER: 'UPDATE_USER',
+  ENABLE_USER: 'ENABLE_USER',
+  DISABLE_USER: 'DISABLE_USER',
 } as const
 export type AuditActionCode = (typeof AUDIT_ACTION)[keyof typeof AUDIT_ACTION]
 
@@ -93,6 +99,11 @@ export const ACTION_LABEL_CN: Record<AuditActionCode, string> = {
   [AUDIT_ACTION.REVIEW_REJECT]: '绩效复核驳回',
   [AUDIT_ACTION.DECISION_APPROVE]: '状态变更批准',
   [AUDIT_ACTION.DECISION_REJECT]: '状态变更驳回',
+  // 用户域四码：中文口径与 types/admin-log.ts 既有 ADMIN_ACTION_LABEL_CN 保持一致，不另立说法
+  [AUDIT_ACTION.CREATE_USER]: '新增用户',
+  [AUDIT_ACTION.UPDATE_USER]: '修改用户资料',
+  [AUDIT_ACTION.ENABLE_USER]: '启用账号',
+  [AUDIT_ACTION.DISABLE_USER]: '停用账号',
 }
 
 export const RESULT_LABEL_CN: Record<AuditResultCode, string> = {
@@ -155,6 +166,13 @@ const ACTION_TAG_TYPE: Record<AuditActionCode, ElTagType> = {
   [AUDIT_ACTION.REVIEW_REJECT]: 'danger',
   [AUDIT_ACTION.DECISION_APPROVE]: 'warning',
   [AUDIT_ACTION.DECISION_REJECT]: 'info',
+  // 用户域四码颜色从旧沿用 constants/auditLogView.ts 既有 ADMIN_ACTION_TAG_TYPE 定义
+  // （CREATE_USER/ENABLE_USER=success、DISABLE_USER=danger），保证同一动作在管理页与其他日志页同色；
+  // UPDATE_USER 为新增码（后端资料与角色调整同用此码，见 docs/用户管理接口规格增补稿 §3.4），取中性 primary。
+  [AUDIT_ACTION.CREATE_USER]: 'success',
+  [AUDIT_ACTION.UPDATE_USER]: 'primary',
+  [AUDIT_ACTION.ENABLE_USER]: 'success',
+  [AUDIT_ACTION.DISABLE_USER]: 'danger',
 }
 
 /**
@@ -269,5 +287,5 @@ export const AUDITOR_ACTION_OPTIONS: ActionOption[] = toActionOptions([
 /** 后端 AuditAction 全量动作筛选（业务员日志页展示己方供应商上的审批动作时使用）。 */
 export const ALL_ACTION_OPTIONS: ActionOption[] = toActionOptions(Object.values(AUDIT_ACTION))
 
-/** 业务员（STAFF）自身可触发的动作：后端当前仅定义 SUBMIT，档案 CRUD 等动作待枚举扩展。 */
+/** 业务员（STAFF）自身可触发的动作：后端目前仅 SUBMIT，档案 CRUD 等动作待枚举扩展；用户域四码属 ADMIN，不进本筛选。 */
 export const STAFF_ACTION_OPTIONS: ActionOption[] = toActionOptions([AUDIT_ACTION.SUBMIT])

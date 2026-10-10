@@ -136,7 +136,7 @@ com.srm.core
 | entity_id | Long | |
 | operator_id | Long | FK |
 | operator_role | String（`Role` 枚举） | 落库时的快照角色，不随用户后续改角色变化 |
-| action | String | 如 SUBMIT / AUDIT_APPROVE / AUDIT_REJECT / DECISION_APPROVE / DECISION_REJECT（停用/恢复/淘汰统一用 DECISION_*，见数据库设计文档 §8） |
+| action | String（`AuditAction` 枚举，共 11 码，与代码/数据库设计文档 §8 一致） | 业务域：SUBMIT / AUDIT_APPROVE / AUDIT_REJECT / REVIEW_APPROVE / REVIEW_REJECT / DECISION_APPROVE / DECISION_REJECT（停用/恢复/淘汰统一用 DECISION_*）；用户域（entity_type=USER）：CREATE_USER / UPDATE_USER / ENABLE_USER / DISABLE_USER |
 | old_status / new_status | String（可空） | |
 | result | String（`AuditResult` 枚举） | SUCCESS / REJECTED |
 | comment | String（可空） | |
@@ -254,13 +254,39 @@ public interface AuditLogService {
 
 ### 4.7 `UserService`
 
+> 以已实现代码 `service/UserService.java` 为准（裁决 20261010，"文档落后于代码则修文档"原则）：所有写操作携带操作人 `UserPrincipal`，用于防自锁与审计留痕。
+
 ```java
 public interface UserService {
-    UserResponse create(UserCreateRequest request);
+    /** 分页查询，created_at 降序 */
     PageResult<UserResponse> list(int page, int pageSize);
-    void updateStatus(Long id, boolean enabled);
+
+    /** 新增（BCrypt 编码密码）；用户名已存在 → 40903；成功后审计 CREATE_USER */
+    UserResponse create(UserCreateRequest request, UserPrincipal operator);
+
+    /** 仅可改 real_name/role；请求体含非 null username/password → 40001；改自己角色 → 40302；不存在 → 40401；成功后审计 UPDATE_USER */
+    UserResponse update(Long id, UserUpdateRequest request, UserPrincipal operator);
+
+    /** 启用/停用；停用自己 → 40302；幂等（目标态与当前一致不写 DB/审计）；不存在 → 40401；成功后审计 ENABLE_USER/DISABLE_USER */
+    void updateStatus(Long id, UserStatusUpdateRequest request, UserPrincipal operator);
 }
 ```
+
+### 4.8 `FileService`（支撑 `POST /files/upload`，api-spec 第 2 节）
+
+```java
+public interface FileService {
+    /** 校验并落盘，返回可直接填入 QualificationCreateRequest.file_url 的访问地址；不写任何业务表 */
+    FileUploadResponse upload(MultipartFile file);
+}
+```
+
+实现约束（与 api-spec 文件上传节逐条对齐）：
+- **校验**：扩展名 + MIME **双重白名单**（仅 `pdf`/`jpg`/`jpeg`/`png`，扩展名取自 `original_filename`、MIME 取自 `content_type`，两者都命中白名单才放行）；单文件≤10MB；不满足 → `BusinessException(VALIDATION_FAILED)`（40001）。空文件/文件名缺失同样 40001。
+- **防覆盖与防注入**：落盘文件名 = `UUID.randomUUID() + 小写扩展名`，丢弃原始文件名拼接路径（杜绝 `../` 路径穿越）；原始文件名仅在响应体 `file_name` 回显。
+- **存储**：MVP 本地磁盘，目录由配置项 `srm.upload.dir` 控制（默认 `./uploads`，不入仓）；不接 OSS。
+- **对外访问**：`WebMvcConfigurer#addResourceHandlers` 将 `/uploads/**` 映射到 `file:{srm.upload.dir}/`；`file_url` = `{服务基址}/uploads/{存储文件名}`。
+- **无业务副作用**：不写表、不做归属校验、不记审计（上传本身不是业务状态变更，资质落库时由 `POST /suppliers/{id}/qualifications` 写审计）；Spring Security 层面仅要求登录 + `STAFF` 角色（@PreAuthorize）。
 
 ---
 
@@ -359,6 +385,13 @@ class UserController {
     @PreAuthorize("hasRole('ADMIN')")
     ApiResponse<Void> updateStatus(@PathVariable Long id, @RequestBody @Valid UserStatusUpdateRequest request);
 }
+
+@RestController @RequestMapping("/api/v1/files")
+class FileController {
+    /** multipart/form-data，字段名 file；校验见 §4.8；成功返回 file_url/file_name/size；不写业务表 */
+    @PreAuthorize("hasRole('STAFF')")
+    ApiResponse<FileUploadResponse> upload(@RequestParam("file") MultipartFile file);
+}
 ```
 
 ---
@@ -424,6 +457,7 @@ DTO 的字段定义以 `docs/api-spec.md` 对应 TS `interface` 为唯一事实�
 | `PerformanceEvaluationResponse` / `*CreateRequest` / `*UpdateRequest` / `PerformanceReviewDecisionRequest` | 同名 | `dto.performance` |
 | `AuditLogResponse` | 同名 | `dto.auditlog` |
 | `UserResponse` / `UserCreateRequest` | 同名 | `dto.user` |
+| `FileUploadResponse` | 同名 | `dto.file` |
 
 - DTO 字段命名采用**显式映射**口径：每个与前端契约对齐的字段均显式标注 `@JsonProperty("snake_case")`（如 `@JsonProperty("tax_no")`），**不依赖** `PropertyNamingStrategies.SNAKE_CASE` 全局配置（依据 rules.md §1 与项目既定决策：显式注解可杜绝映射遗漏导致的字段丢失）。
 - 再次强调：`PerformanceFactRecord` 及所有 `*CreateRequest`/`*UpdateRequest` 里**物理上不能出现**任何分数/评级字段——这不是校验层面的约束，是类定义层面就不应该有这个字段。

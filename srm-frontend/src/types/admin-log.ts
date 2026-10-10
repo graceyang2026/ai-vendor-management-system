@@ -13,7 +13,13 @@ export type AdminLogItem = AuditLogRecord
 /** 查询参数（同一后端端点，entity_type 固定 USER）。 */
 export type AdminLogQueryParams = ReviewLogQueryParams
 
-/** 待后端补充的用户管理动作占位码（后端 AuditAction 目前只有 7 个审批类码值）。 */
+/**
+ * 管理页动作筛选码。后端 AuditAction 已扩至 11 码，其中用户域 CREATE_USER / UPDATE_USER /
+ * ENABLE_USER / DISABLE_USER 为真实码（docs/api-spec.md 第 5 节 + 数据库表设计第 8 节），
+ * 本组常量作为码值别名保留以兼容既有页面引用；
+ * 例外：UPDATE_ROLE 仍是前端占位码（后端"资料/角色调整"统一落 UPDATE_USER，
+ * 见 docs/用户管理接口规格增补稿 §3.4），命名待与后端确认后收敛，本次不自改。
+ */
 export const ADMIN_PENDING_ACTION = {
   CREATE_USER: 'CREATE_USER',
   UPDATE_ROLE: 'UPDATE_ROLE',
@@ -22,10 +28,7 @@ export const ADMIN_PENDING_ACTION = {
 } as const
 export type AdminPendingActionCode = (typeof ADMIN_PENDING_ACTION)[keyof typeof ADMIN_PENDING_ACTION]
 
-/**
- * 管理日志动作筛选（value=占位码，label=中文）。
- * 红线：这 4 个码后端尚未定义，接入真实筛选前必须先与后端在 AuditAction 中对齐命名。
- */
+/** 管理日志动作筛选（value=动作码，label=中文；UPDATE_ROLE 为占位码，见上方说明）。 */
 export const ADMIN_ACTION_OPTIONS: { value: AdminPendingActionCode; label: string }[] = [
   { value: ADMIN_PENDING_ACTION.CREATE_USER, label: '新增用户' },
   { value: ADMIN_PENDING_ACTION.UPDATE_ROLE, label: '调整用户角色' },
@@ -33,7 +36,12 @@ export const ADMIN_ACTION_OPTIONS: { value: AdminPendingActionCode; label: strin
   { value: ADMIN_PENDING_ACTION.ENABLE_USER, label: '启用账号' },
 ]
 
-/** 占位码中文（真实审批码仍由 @/constants/auditDictionary 解析）。 */
+/**
+ * 占位码中文（真实审批码仍由 @/constants/auditDictionary 解析）。
+ * 权威源说明：后端已定义的码（含用户域 CREATE_USER/UPDATE_USER/ENABLE_USER/DISABLE_USER）
+ * 一律以 auditDictionary.ACTION_LABEL_CN 为准，本表只兜后端未定义的占位码（现仅 UPDATE_ROLE）；
+ * 同名的三条文案与字典口径一致，不得在此另改说法（解析顺序见 @/constants/auditLogView）。
+ */
 export const ADMIN_ACTION_LABEL_CN: Record<AdminPendingActionCode, string> = {
   [ADMIN_PENDING_ACTION.CREATE_USER]: '新增用户',
   [ADMIN_PENDING_ACTION.UPDATE_ROLE]: '调整用户角色',

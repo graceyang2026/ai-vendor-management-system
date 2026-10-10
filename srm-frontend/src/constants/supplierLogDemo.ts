@@ -4,7 +4,9 @@ import type { AuditLogRecord } from '@/types/audit-log'
  * 业务员控制台兜底示例数据（原型 docs/mockups/原型展示-采购员v1.1_待评审20260929.html globalLogs 改造）。
  * action / old_status / new_status 全部使用后端枚举码，中文由 @/constants/auditDictionary 渲染。
  *
- * 注意：后端 AuditAction 目前只有 SUBMIT / AUDIT_* / REVIEW_* / DECISION_* 七个码，
+ * 注意：后端 AuditAction 现有 11 个码 = 业务域 SUBMIT / AUDIT_* / REVIEW_* / DECISION_* 七码，
+ * 加用户域 CREATE_USER / UPDATE_USER / ENABLE_USER / DISABLE_USER 四码（entity_type=USER，仅 ADMIN 触发）；
+ * 用户域四码不属业务员视角，供应商日志里仍只会出现业务域码，故本示例数据无需增删。
  * 原型业务员的"新增档案 / 修改档案 / 逻辑删除草稿 / 申请变更状态 / 申请恢复合作"无对应码值，
  * 故本示例只保留能用真实码表达的记录（供应商建档送审=SUBMIT + SUPPLIER 对象，
  * 一步式绩效事实提交=SUBMIT + PERFORMANCE_EVALUATION 对象，草稿对象类型已废弃）；
