@@ -1,6 +1,6 @@
 # Qoder 项目规则（供 AI Agent 遵循）
 
-本仓库是前后端分离的双工程：`srm-backend/`（Spring Boot）+ `srm-frontend/`（Vue 3）。**任何跨前后端的接口改动，必须先改 `docs/api-spec.md`，再改代码**；代码与契约不一致时以契约为准，发现不一致要停下来修契约或修代码，不能各写各的。
+本仓库是前后端分离的双工程：`srm-backend/`（Spring Boot）+ `srm-frontend/`（Vue 3）。代码与契约不一致时以契约为准，发现不一致要先询问等人工确认，不能各写各的。
 ## 0. AI Agent 执行原则
 
 - 本规则文件是本仓库的强制开发规范，AI Agent 必须始终遵守。
@@ -114,7 +114,6 @@
 - 运行后端：`cd srm-backend && ./mvnw spring-boot:run`
 - 构建后端：`cd srm-backend && ./mvnw clean package`
 - 全量测试后端：`cd srm-backend && ./mvnw test`
-- 单个测试类：`cd srm-backend && ./mvnw test -Dtest=SupplierServiceImplTest`
 - 运行前端：`cd srm-frontend && npm run dev`
 - 构建前端：`cd srm-frontend && npm run build`
 - 详细业务设计原文：`docs/TDD.docx`（V1.4）；需求补充：`docs/供应商管理系统需求规格说明书-补充非MVP V1.6_20261011待评审.docx`；接口契约：`docs/api-spec.md`
