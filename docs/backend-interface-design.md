@@ -8,16 +8,6 @@
 
 > 铁律：本文档任何设计变更均须先在此登记一行，再改代码；与已实现代码不一致时，**以已实现代码为准并回写本文档**。表头沿用项目统一标准（与 `docs/TDD.docx`、需求规格说明书 V1.5 的「版本修订记录」表一致）。
 
-| 编号 | 日期 | 版本 | 建立/修订人 | 建立/修订内容 |
-|---|---|---|---|---|
-|  | 2026-09-29 | V1.0 | Qoder | 初始版本：包结构 / 实体 / Mapper / Service / Controller / DTO 签名蓝图（依据 TDD V1.3） |
-|  | 2026-10-10 | V1.1 | Qoder | §4.7 `UserService` 按已实现代码重写：补 `update` 方法，`updateStatus` 签名含 `UserPrincipal`（代码为权威 `service/UserService.java`） |
-|  | 2026-10-10 | V1.2 | Qoder | §2.6 动作码对齐 `AuditAction` 全 11 码；新增 §4.8 `FileService`、§5 `FileController`、§7 `FileUploadResponse` |
-|  | 2026-10-10 | V1.3 | Qoder | §4.2 `create` 补 `tax_no` 双层唯一性校验与 `DuplicateKeyException`→40902 转译口径（用户裁决：方案 1） |
-|  | 2026-10-10 | V1.4 | Qoder | §4.2 `create` 补字段格式校验归属：Controller 层 Bean Validation 与 api-spec §2 正则同源，格式（40001）先行、唯一性（40902）在后，Service 不重复校验（用户给定直接可落地标准） |
-|  | 2026-10-11 | V1.5 | Qoder | 落地四项裁决：① §4.2 `getById`/`list` 与 §4.6 `AuditLogService.list` 新增 `UserPrincipal operator` 参数以承载后端强制行级隔离（规则 A/B/C）；② §2.3 `Qualification` 增审核闭环字段，§4.2 新增 `reviewQualification`、`addQualification` 允许 `NORMAL`；③ §4.6 `record` 采用**新增重载**而非改签名（保住现有 8 参调用与已有测试）；④ `EntityType` 需增 `SUPPLIER_QUALIFICATION` 枚举项（代码现仅 4 值）。均为目标态，属供应商业务代码批次，待用户解锁后实现 |
-|  | 2026-10-11 | V1.6 | Qoder | 【用户裁决：《SRM 后端数据库表设计.md》移出关注范围】§4.6 对 `audit_log.supplier_id` DDL 增量的引用改指 **api-spec §0「目标态 DDL 增量」②**（目标态权威源）+ `schema.sql`（现状），本文档不再引用冻结的设计文档；另清理 §2.2/§4.5 另外 3 处“数据库设计文档 §5/§7/§8”表述，改为直称 `schema.sql`（已落地索引）与 `AuditAction.java`（枚举源） |
-
 ---
 
 ## 1. 包结构总览

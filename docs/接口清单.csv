@@ -1,8 +1,0 @@
-﻿序号,HTTP方法,路径,权限,产出模块,说明
-1,POST,/api/v1/auth/login,公开,模块1,登录返回JWT
-2,GET,/api/v1/audit-logs,已登录,模块4,审计日志分页查询
-3,GET,/api/v1/users,ADMIN,模块5,用户列表分页(默认page_size=20)
-4,POST,/api/v1/users,ADMIN,模块5,新增用户
-5,PUT,/api/v1/users/{id},ADMIN,模块5,改资料/角色
-6,PATCH,/api/v1/users/{id}/status,ADMIN,模块5,启用/停用
--,GET,/api/test/ping,公开,脚手架,开发自检用非业务接口
