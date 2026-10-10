@@ -1,10 +1,8 @@
 # SRM MVP 前后端 API 契约 (v1)
 
-> 依据 `docs/TDD.docx`（供应商管理系统设计文档 V1.3，基线 2026-09-29）与补充需求书 V1.5 制定。本文档是 `srm-backend/` 与 `srm-frontend/` 的唯一共同事实来源（single source of truth）；任何接口变更必须先改这份文档再改代码。
+> 依据 `docs/TDD.docx`（供应商管理系统设计文档 V1.4，基线 2026-10-11）与《供应商管理系统需求规格说明书-补充非MVP **V1.6**_20261011待评审.docx》制定。本文档是 `srm-backend/` 与 `srm-frontend/` 的唯一共同事实来源（single source of truth）；任何接口变更必须先改这份文档再改代码。
 
-## 版本修订记录
-
-> 铁律：本文档任何契约变更均须先在此登记一行，再改代码；未登记的改动视为无效契约。表头沿用项目统一标准（与 `docs/TDD.docx`、需求规格说明书 V1.5 的「版本修订记录」表一致）。
+> **变更登记机制已废止（用户裁决 2026-10-11）**：本文档不再维护「版本修订记录」表，历史与后续变更一律由 git 提交记录承载（查改动缘由看 `git log -- docs/api-spec.md`）。不变的硬约束：**任何接口变更必须先改本契约、再改代码**；未落到本契约的接口定义视为无效契约。
 
 ## 0. 全局约定
 
@@ -43,7 +41,7 @@ interface PageResult<T> {
   - **落地复用现有 RBAC 底座（不新造轮子）**：角色粗粒度拦截沿用 Controller `@PreAuthorize("hasRole('...')")`（`SecurityConfig` 已 `@EnableMethodSecurity`）；本人/状态细粒度校验沿用 `com.srm.core.security.RoleGuard` 已有三方法——`requireRole`→`40301`、`requireStatusAllowed`→`40302`、`requireSelf(ownerId)`→`40302`；当前用户 ID 从 `CurrentUserProvider.require()` 取 `UserPrincipal.getId()`。规则 A/C 的列表隔离只需在查询条件里拼 `created_by` / `supplier_id`，**不引入部门树、数据权限组等多维模型**。
   - **实现前提（DDL）**：`audit_log` 需新增冗余列 `supplier_id`（见下方「目标态 DDL 增量」②）——该表现无此列，若无此列，“名下资产留痕”无法用单一条件覆盖 `PERFORMANCE_EVALUATION` / `LIFECYCLE_REQUEST` 等非 `SUPPLIER` 实体。
 
-- **目标态 DDL 增量（裁决 20261011；自本文起升为唯一权威记录，《SRM 后端数据库表设计.md》不再作为核对依据）**：数据库**现状事实源为 `srm-backend/src/main/resources/schema.sql`**（下“现状”列均已实测读出）。下列三项属待落地增量，归“供应商业务代码批次”任务卡；未落地前本契约按目标态描述接口行为，后端不得因库里还没这些列而改变接口定义。
+- **目标态 DDL 增量（裁决 20261011；自本文起升为唯一权威记录，《SRM 后端数据库表设计.md》已于 2026-10-11 从仓库删除，不再也无法作为核对依据）**：数据库**现状事实源为 `srm-backend/src/main/resources/schema.sql`**（下“现状”列均已实测读出）。下列三项属待落地增量，归“供应商业务代码批次”任务卡；未落地前本契约按目标态描述接口行为，后端不得因库里还没这些列而改变接口定义。
 
 | # | 对象 | `schema.sql` / 代码现状 | 需新增（目标态） | 支撑的裁决 |
 |---|---|---|---|---|
@@ -99,7 +97,7 @@ MVP 演示账号（启动时按需播种，仅当 `users` 表为空）：`admin/
 
 `DRAFT`（草稿/待提交） → `PENDING_REVIEW`（待审核，AUDITOR 审核中）→ 通过 → `NORMAL`（正常合作）；驳回 → `RETURNED`（待修改/已驳回，STAFF 改后可重新 `submit` 回到 `PENDING_REVIEW`）。`NORMAL ⇄ SUSPENDED`（停用/恢复）只能通过第 3 节的生命周期申请流转，不允许直接 PATCH 状态字段。`NORMAL`/`SUSPENDED` → `ELIMINATED`（淘汰，终态、不可逆；须经第 3 节生命周期申请流程：STAFF 提交 `ELIMINATE` 申请，AUDITOR 审批通过后生效，不允许 AUDITOR 跳过申请直接变更状态）。
 
-> **上游冲突已裁决（20261011，站 TDD）**：SRS V1.5 §4「资质控制机制」原句“…或由审计员视风险程度，手动将该供应商状态变更为‘停用’”与 TDD《资质过期与风险预警》“不允许 AUDITOR 绕过流程直接修改状态”相悖。按 **TDD 口径**定案：停用只能由 STAFF 提 `SUSPEND` 申请、AUDITOR 在 `POST /lifecycle-requests/{id}/decision` 裁决；**本契约不提供任何直接改 `supplier.status` 的旁路接口**。SRS 侧对应修订已列入待办（需用户确认后才能动 DOCX），修订前以本文为准。
+> **上游冲突已消除（20261011）**：旧 SRS V1.5 §4「资质控制机制」原句“…或由审计员视风险程度，手动将该供应商状态变更为‘停用’”与 TDD《资质过期与风险预警》“不允许 AUDITOR 绕过流程直接修改状态”相悖。**用户已于 2026-10-11 将 SRS 升版至 V1.6 并按 TDD 口径重写该句**（现原文：“…由业务员在系统内追加或更新资质文件并触发资质审核，审核通过后自动解除预警；如确需中止合作，由业务员提交停用申请、审计员审批裁决，审计员不得绕过申请流程直接变更供应商状态”），同时同步了 §2.2/§2.3 职责句、§5.1 停用定义、§5.2 流转路径。**现行三处已完全同轨，不再属上游矛盾**。本契约依旧不提供任何直接改 `supplier.status` 的旁路接口。
 
 `SupplierStatus` = `'DRAFT' | 'PENDING_REVIEW' | 'NORMAL' | 'RETURNED' | 'SUSPENDED' | 'ELIMINATED'`
 
@@ -144,7 +142,7 @@ interface SupplierCreateRequest {
 type SupplierUpdateRequest = Partial<SupplierCreateRequest>;
 ```
 
-**校验规则**（裁决 20261010，口径来自需求规格说明书 V1.5「数据校验机制」；**后端 Bean Validation（`@NotBlank`/`@Pattern`）与前端表单正则必须逐字同源**，不得两侧各写一套）：
+**校验规则**（裁决 20261010，口径来自需求规格说明书 V1.6「数据校验机制」；**后端 Bean Validation（`@NotBlank`/`@Pattern`）与前端表单正则必须逐字同源**，不得两侧各写一套）：
 
 失败统一返回 `code = 40001`（枚举名以已实现代码为准：`ErrorCode.VALIDATION_FAILED`；详见下方“传输方式”），`message` 用本表固定文案。
 
@@ -442,6 +440,8 @@ interface AuditLogResponse {
 ```
 
 `GET /api/v1/audit-logs?entity_type=&entity_id=&page=&page_size=`——**后端强制行级隔离**（裁决 20261011，删除旧版“ALL 角色可查看、前端按业务范围内过滤、后端不做行级隔离”的错误表述）：`STAFF` 仅返回 `operator_id = 当前用户` OR `supplier_id IN (本人创建的供应商)` 的记录；`AUDITOR` / `ADMIN` 全量可见。实现依赖 `audit_log` 新增 `supplier_id` 冗余列与 `SUPPLIER_QUALIFICATION` 枚举项（均见 §0「目标态 DDL 增量」②③）。
+
+**`entity_type` 参数取值规则（裁决 20261011，修审计员日志页混入管理员日志的缺陷）**：支持**逗号分隔多值**——单个值为等值过滤（`entity_type = ?`），多个值为 `IN` 过滤（非法值不特殊处理，查不到即空）。审核员【操作与审批日志】页的视角 = 业务域三实体 `SUPPLIER,PERFORMANCE_EVALUATION,LIFECYCLE_REQUEST`；`USER` 域日志（CREATE_USER / UPDATE_USER / ENABLE_USER / DISABLE_USER，按权限矩阵仅 ADMIN 可产生，即“系统管理员的操作日志”）**不得出现在审核员日志页**，只在管理员日志页展示。该范围由页面显式传 `entity_type` 列表、后端按参数过滤实现（不是新安全边界：规则 C 下 AUDITOR 本就全量可见，属展示范围裁剪；缺省不传仍为全量，供管理员页使用）。**同一视角规则同样适用于审核详情页内嵌的「历史审批与追溯日志」面板**（`ReviewHistoryLogTable`）：按 `entity_id` 查追溯日志时也必须同时传 `entity_type=SUPPLIER,PERFORMANCE_EVALUATION,LIFECYCLE_REQUEST`，否则 USER 域日志会因用户 ID 与供应商 ID 数值撞号而串入审核员详情视图（裁决 20261011，用户批准修复决策点 1）。
 
 ---
 

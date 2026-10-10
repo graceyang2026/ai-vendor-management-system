@@ -2,7 +2,24 @@
   "permissions": {
     "allow": [
       "Bash(echo hello:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Read",
+      "Grep",
+      "Glob",
+      "Bash(pwd)",
+      "Bash(cd:*)",
+      "Bash(ls:*)",
+      "Bash(dir:*)",
+      "Bash(cat:*)",
+      "Bash(type:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(grep:*)",
+      "Bash(rg:*)",
+      "Bash(find:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)"
     ]
   },
   "mcpServers": {
@@ -15,3 +32,5 @@
     }
   }
 }
+
+

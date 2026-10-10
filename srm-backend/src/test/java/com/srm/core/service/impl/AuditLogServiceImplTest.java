@@ -196,6 +196,82 @@ class AuditLogServiceImplTest {
         assertThat(first.getResult()).isEqualTo("REJECTED");
     }
 
+    /** entity_type 多值用例的公共夹具：返回空页，只关心下推的查询条件 */
+    private void stubEmptyPage() {
+        when(auditLogMapper.selectPage(any(), any())).thenAnswer(invocation -> {
+            Page<AuditLog> page = invocation.getArgument(0);
+            page.setRecords(List.of());
+            page.setTotal(0L);
+            return page;
+        });
+    }
+
+    /** 取回实际传给 selectPage 的 wrapper，便于断言下推条件 */
+    @SuppressWarnings("unchecked")
+    private AbstractWrapper<AuditLog, ?, ?> captureUsedWrapper() {
+        ArgumentCaptor<Wrapper<AuditLog>> wrapperCaptor = ArgumentCaptor.forClass(Wrapper.class);
+        verify(auditLogMapper).selectPage(any(), wrapperCaptor.capture());
+        return (AbstractWrapper<AuditLog, ?, ?>) wrapperCaptor.getValue();
+    }
+
+    /**
+     * 缺陷回归：审计员【操作与审批日志】页不得混入系统管理员（USER 域）日志。
+     * 契约（api-spec §5）：entity_type 逗号分隔多值下推为 IN 过滤；
+     * 空白/纯逗号解析后为空集则不加任何 entity_type 条件（退化为全量）。
+     */
+    @Test
+    void listSupportsCommaSeparatedEntityTypesAsInFilter() {
+        stubEmptyPage();
+
+        // 前端审核员页实发值 SUPPLIER,PERFORMANCE_EVALUATION,LIFECYCLE_REQUEST，此处故意带空格以验证 trim
+        auditLogService.list("SUPPLIER, PERFORMANCE_EVALUATION ,LIFECYCLE_REQUEST", null, 1, 10);
+
+        AbstractWrapper<AuditLog, ?, ?> usedWrapper = captureUsedWrapper();
+        // 先触发 getSqlSegment 使惰性参数物化（MP paramNameValuePairs 延迟填充），再断言内容
+        String sqlSegment = usedWrapper.getSqlSegment();
+
+        // IN 必须落在 entity_type 列上，且入参只经 #{} 占位符下推（SQL 文本内不得出现字面量，杜绝拼接注入面）
+        assertThat(sqlSegment).containsPattern("entity_type\\s+IN\\s*\\(");
+        assertThat(sqlSegment).containsPattern("#\\{ew\\.paramNameValuePairs\\.MPGENVAL\\d+}");
+        assertThat(sqlSegment).doesNotContain("'");
+        // 三个逗号值全部作为 IN 参数下推（含 trim），USER 域不在其中
+        assertThat(usedWrapper.getParamNameValuePairs().values())
+                .containsExactlyInAnyOrder("SUPPLIER", "PERFORMANCE_EVALUATION", "LIFECYCLE_REQUEST")
+                .doesNotContain("USER");
+    }
+
+    @Test
+    void listIgnoresBlankCommaOnlyEntityTypeFilter() {
+        stubEmptyPage();
+
+        auditLogService.list(" , ", null, 1, 10);
+
+        AbstractWrapper<AuditLog, ?, ?> usedWrapper = captureUsedWrapper();
+        // 纯逗号解析为空集：不得追加任何 entity_type 条件（既不 eq 也不 IN，更不能生成非法的 IN ()）；先物化 segment
+        String blankSegment = usedWrapper.getSqlSegment();
+        assertThat(blankSegment).doesNotContain("entity_type");
+        assertThat(blankSegment).doesNotContain("IN");
+        assertThat(usedWrapper.getParamNameValuePairs()).isEmpty();
+    }
+
+    /**
+     * 零回归：引入逗号多值后，单值仍必须是 entity_type 等值过滤而非 IN，
+     * 管理员日志页传 USER、业务员页传 SUPPLIER 的既有行为不受影响。
+     */
+    @Test
+    void listKeepsSingleValueTypeAsEqualityFilter() {
+        stubEmptyPage();
+
+        auditLogService.list("USER", null, 1, 10);
+
+        AbstractWrapper<AuditLog, ?, ?> usedWrapper = captureUsedWrapper();
+        String sqlSegment = usedWrapper.getSqlSegment();
+
+        assertThat(sqlSegment).containsPattern("entity_type\\s*=\\s*#\\{ew\\.paramNameValuePairs\\.MPGENVAL\\d+}");
+        assertThat(sqlSegment).doesNotContain("IN");
+        assertThat(usedWrapper.getParamNameValuePairs().values()).containsExactly("USER");
+    }
+
     /**
      * 反查操作人姓名的两条兜底：real_name 为空必须回退 username；
      * 批量结果出现同一 id 的重复行时保留第一条，不得抛 IllegalStateException。

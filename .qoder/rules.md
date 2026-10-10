@@ -59,7 +59,7 @@
 
 ## 4. 业务领域规则（源自 `docs/TDD.docx` 技术设计文档）
 
-> 注意区分：本节的"TDD"指 `docs/TDD.docx`/`docs/TDD.pdf`（Technical Design Document，技术设计文档），与第 2 节"TDD 业务铁律"（Test-Driven Development）是两个不同含义的同一缩写，不要混淆。任何与下列规则冲突的代码改动，先查阅 `docs/TDD.docx` 原文和 `docs/api-spec.md` 再动手。
+> 注意区分：本节的"TDD"指 `docs/TDD.docx`（Technical Design Document，技术设计文档，现行基线 **V1.4，2026-10-11**），与第 2 节"TDD 业务铁律"（Test-Driven Development）是两个不同含义的同一缩写，不要混淆。任何与下列规则冲突的代码改动，先查阅 `docs/TDD.docx` 原文和 `docs/api-spec.md` 再动手。（注：`docs/TDD.pdf` 与《SRM 后端数据库表设计》md/docx 已于 2026-10-11 从仓库删除，勿再引用；数据库现状以 `srm-backend/src/main/resources/schema.sql` 为唯一事实源。）
 
 ### 4.1 角色与 RBAC 权限矩阵
 
@@ -117,4 +117,4 @@
 - 单个测试类：`cd srm-backend && ./mvnw test -Dtest=SupplierServiceImplTest`
 - 运行前端：`cd srm-frontend && npm run dev`
 - 构建前端：`cd srm-frontend && npm run build`
-- 详细业务设计原文：`docs/TDD.docx` / `docs/TDD.pdf`；需求补充：`docs/供应商管理系统需求规格说明书-补充非MVP V1.5_20260922待评审.docx`；接口契约：`docs/api-spec.md`
+- 详细业务设计原文：`docs/TDD.docx`（V1.4）；需求补充：`docs/供应商管理系统需求规格说明书-补充非MVP V1.6_20261011待评审.docx`；接口契约：`docs/api-spec.md`

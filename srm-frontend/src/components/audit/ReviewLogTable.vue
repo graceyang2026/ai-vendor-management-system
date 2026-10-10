@@ -15,11 +15,14 @@ import {
   getStatusTagType,
 } from '@/constants/auditLogView'
 import type { AuditLogRecord } from '@/types/audit-log'
+import { AUDITOR_ENTITY_TYPES } from '@/types/audit-log'
 
 /**
  * 全量操作与审批日志（审核员 AUDITOR 维度视角，系统全量合规审计与过程日志/审计追踪）。
  * 契约红线：action / entity_type / old_status / new_status 一律使用后端枚举码（见 auditDictionary），
  * 中文仅在展示层映射；后端未就绪或扩展筛选参数不生效时落入原型示例数据兜底。
+ * 视角范围（缺陷修复 20261011，docs/api-spec.md §5）：显式传业务域三实体逗号列表，
+ * 后端按 IN 过滤，确保系统管理员的 USER 域操作日志不出现在审核员页面。
  */
 
 const loading = ref(false)
@@ -57,6 +60,8 @@ async function loadLogs() {
   loading.value = true
   try {
     const res = await getReviewLogListApi({
+      // 审核员页只取业务域三实体（后端 entity_type 支持逗号多值 IN），排除 ADMIN 的 USER 域日志
+      entity_type: AUDITOR_ENTITY_TYPES.join(','),
       entity_name: filters.entityName || undefined,
       action: filters.action || undefined,
       page: page.value,

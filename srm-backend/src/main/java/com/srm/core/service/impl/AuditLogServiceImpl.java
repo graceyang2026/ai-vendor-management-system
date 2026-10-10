@@ -18,6 +18,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -73,7 +74,18 @@ public class AuditLogServiceImpl implements AuditLogService {
     public PageResult<AuditLogResponse> list(String entityType, Long entityId, int page, int pageSize) {
         LambdaQueryWrapper<AuditLog> wrapper = new LambdaQueryWrapper<>();
         if (StringUtils.hasText(entityType)) {
-            wrapper.eq(AuditLog::getEntityType, entityType);
+            // 逗号分隔多值（docs/api-spec.md §5）：单值等值、多值 IN；审计员日志页据此排除 USER 域（管理员操作日志）
+            List<String> entityTypes = Arrays.stream(entityType.split(","))
+                    .map(String::trim)
+                    .filter(StringUtils::hasText)
+                    .toList();
+            if (entityTypes.size() == 1) {
+                wrapper.eq(AuditLog::getEntityType, entityTypes.get(0));
+            } else if (entityTypes.size() > 1) {
+                // 值只经 MyBatis-Plus  paramNameValuePairs 占位符下推，绝不拼进 SQL 文本
+                wrapper.in(AuditLog::getEntityType, entityTypes);
+            }
+            // 解析后为空集（如 " , "）不加任何 entity_type 条件，按契约退化为全量
         }
         if (entityId != null) {
             wrapper.eq(AuditLog::getEntityId, entityId);
