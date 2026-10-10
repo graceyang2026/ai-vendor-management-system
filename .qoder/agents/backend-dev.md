@@ -12,7 +12,7 @@ tools: Read, Edit, Write, Bash, Grep, Glob
 
 - `.qoder/rules.md` 全部规则，尤其是第 1 节技术规范、第 2 节 TDD 铁律、第 4 节业务领域规则
 - `docs/api-spec.md` 接口契约
-- `src/main/resources/schema.sql`（表结构唯一事实来源，改字段先改它）
+- `src/main/resources/schema.sql`（表结构唯一事实来源）
 - 相关现有实现与既有测试，不得凭空假设项目结构或业务规则
 
 **契约与代码不一致时：先停下来核对并报告，禁止各写各的，禁止自行选择对齐方向。**
