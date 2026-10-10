@@ -101,6 +101,43 @@ class AuditLogServiceImplTest {
         assertThat(saved.getCreatedAt()).isNotNull();
     }
 
+    /**
+     * 兜底分支：entityType / operator / result 全为 null 时（系统触发、无上下文的操作），
+     * 必须仍写入一条记录，且 result 缺省补 SUCCESS，不得 NPE 也不得静默丢弃。
+     */
+    @Test
+    void recordToleratesNullEntityTypeOperatorAndResult() {
+        ArgumentCaptor<AuditLog> captor = ArgumentCaptor.forClass(AuditLog.class);
+
+        auditLogService.record(null, 55L, null, "EXPORT", null, null, null, "无操作者上下文");
+
+        verify(auditLogMapper).insert(captor.capture());
+        AuditLog saved = captor.getValue();
+        assertThat(saved.getEntityType()).isNull();
+        assertThat(saved.getEntityId()).isEqualTo(55L);
+        assertThat(saved.getOperatorId()).isNull();
+        assertThat(saved.getOperatorRole()).isNull();
+        // result=null 被缺省补成 SUCCESS：调用方漏传时会留下"成功"假象，此处锁定该既有行为
+        assertThat(saved.getResult()).isEqualTo("SUCCESS");
+    }
+
+    /** 操作者有对象但 role 为空（历史数据/JWT 未带角色）：operator_role 落 null，显式 result 不被覆盖 */
+    @Test
+    void recordHandlesOperatorWithoutRoleAndKeepsExplicitResult() {
+        UserPrincipal operatorWithoutRole =
+                new UserPrincipal(9L, "system", null, "系统", null, true);
+        ArgumentCaptor<AuditLog> captor = ArgumentCaptor.forClass(AuditLog.class);
+
+        auditLogService.record(EntityType.SUPPLIER, 12L, operatorWithoutRole, "AUDIT_REJECT",
+                "PENDING_AUDIT", "RETURNED", AuditResult.REJECTED, "资质过期");
+
+        verify(auditLogMapper).insert(captor.capture());
+        AuditLog saved = captor.getValue();
+        assertThat(saved.getOperatorId()).isEqualTo(9L);
+        assertThat(saved.getOperatorRole()).isNull();
+        assertThat(saved.getResult()).isEqualTo("REJECTED");
+    }
+
     private AuditLog dbRow(long id, long operatorId) {
         AuditLog row = new AuditLog();
         row.setId(id);
@@ -157,6 +194,41 @@ class AuditLogServiceImplTest {
         assertThat(first.getOperatorName()).isEqualTo("审核员李四");
         assertThat(first.getOperatorRole()).isEqualTo("AUDITOR");
         assertThat(first.getResult()).isEqualTo("REJECTED");
+    }
+
+    /**
+     * 反查操作人姓名的两条兜底：real_name 为空必须回退 username；
+     * 批量结果出现同一 id 的重复行时保留第一条，不得抛 IllegalStateException。
+     */
+    @Test
+    void listFallsBackToUsernameAndKeepsFirstOnDuplicateOperatorId() {
+        when(auditLogMapper.selectPage(any(), any())).thenAnswer(invocation -> {
+            Page<AuditLog> page = invocation.getArgument(0);
+            page.setRecords(List.of(dbRow(1L, 3L), dbRow(2L, 4L), dbRow(3L, 3L)));
+            page.setTotal(3L);
+            return page;
+        });
+        when(userMapper.selectBatchIds(any())).thenAnswer(invocation -> List.of(
+                namedUser(3L, "审核员李四", "lisi"),
+                namedUser(3L, "重复脏数据", "lisi-dup"),
+                namedUser(4L, "", "wangwu")));
+
+        PageResult<AuditLogResponse> result = auditLogService.list("SUPPLIER", 9L, 1, 10);
+
+        assertThat(result.getList()).hasSize(3);
+        // id 冲突保留第一条
+        assertThat(result.getList().get(0).getOperatorName()).isEqualTo("审核员李四");
+        // real_name 为空字符串时回退 username
+        assertThat(result.getList().get(1).getOperatorName()).isEqualTo("wangwu");
+        assertThat(result.getList().get(2).getOperatorName()).isEqualTo("审核员李四");
+    }
+
+    private static User namedUser(Long id, String realName, String username) {
+        User user = new User();
+        user.setId(id);
+        user.setRealName(realName);
+        user.setUsername(username);
+        return user;
     }
 
     @Test

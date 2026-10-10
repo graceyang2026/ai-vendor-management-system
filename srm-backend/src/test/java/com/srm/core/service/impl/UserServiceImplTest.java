@@ -144,6 +144,25 @@ class UserServiceImplTest {
         org.mockito.Mockito.verifyNoInteractions(auditLogService);
     }
 
+    /** selectCount 返回 null（Mapper 异常包装/空聚合）时必须当作"不重复"放行，而非 NPE */
+    @Test
+    void createTreatsNullCountAsUsernameAvailable() {
+        when(userMapper.selectCount(any())).thenReturn(null);
+        when(passwordEncoder.encode("Secret@123")).thenReturn("bcrypt_hash");
+        when(userMapper.insert(any(User.class))).thenReturn(1);
+
+        UserCreateRequest req = new UserCreateRequest();
+        req.setUsername("staff03");
+        req.setPassword("Secret@123");
+        req.setRealName("王五");
+        req.setRole(Role.STAFF);
+
+        UserResponse resp = userService.create(req, admin());
+
+        assertThat(resp.getUsername()).isEqualTo("staff03");
+        verify(userMapper).insert(any(User.class));
+    }
+
     // ===== update =====
 
     @Test
@@ -221,6 +240,42 @@ class UserServiceImplTest {
                 eq(null), eq(null), eq(AuditResult.SUCCESS), eq(null));
     }
 
+    /** 自己改自己但没带 role（null）：不触发防自锁，正常改名并审计 */
+    @Test
+    void updateSelfWithoutRoleFieldIsAllowed() {
+        UserPrincipal operator = admin();
+        User self = existingUser(1L, "admin", Role.ADMIN, true);
+        when(userMapper.selectById(1L)).thenReturn(self);
+        when(userMapper.updateById(any(User.class))).thenReturn(1);
+
+        UserUpdateRequest req = new UserUpdateRequest();
+        req.setRealName("超级管理员");
+
+        UserResponse resp = userService.update(1L, req, operator);
+
+        assertThat(resp.getRealName()).isEqualTo("超级管理员");
+        assertThat(resp.getRole()).isEqualTo("ADMIN");
+        verify(auditLogService).record(
+                eq(EntityType.USER), eq(1L), eq(operator),
+                eq(AuditAction.UPDATE_USER.name()),
+                eq(null), eq(null), eq(AuditResult.SUCCESS), eq(null));
+    }
+
+    /** 自己传了与原值相同的 role：属于无变化重提，不算"修改自己角色"，不得报 40302 */
+    @Test
+    void updateSelfWithUnchangedRoleValueIsAllowed() {
+        when(userMapper.selectById(1L)).thenReturn(existingUser(1L, "admin", Role.ADMIN, true));
+        when(userMapper.updateById(any(User.class))).thenReturn(1);
+
+        UserUpdateRequest req = new UserUpdateRequest();
+        req.setRole(Role.ADMIN);
+
+        UserResponse resp = userService.update(1L, req, admin());
+
+        assertThat(resp.getRole()).isEqualTo("ADMIN");
+        verify(userMapper).updateById(any(User.class));
+    }
+
     // ===== updateStatus =====
 
     @Test
@@ -250,6 +305,26 @@ class UserServiceImplTest {
                         .isEqualTo(ErrorCode.STATUS_NOT_ALLOWED));
 
         verify(userMapper, never()).updateById(ArgumentMatchers.<User>any());
+    }
+
+    /** 防自锁只拦"停用自己"；ADMIN 启用自己必须放行（不得被当成自锁拒绝） */
+    @Test
+    void updateStatusEnableSelfIsAllowedAndAuditsEnableUser() {
+        UserPrincipal operator = admin();
+        User self = existingUser(1L, "admin", Role.ADMIN, false);
+        when(userMapper.selectById(1L)).thenReturn(self);
+        when(userMapper.updateById(any(User.class))).thenReturn(1);
+
+        UserStatusUpdateRequest req = new UserStatusUpdateRequest();
+        req.setEnabled(true);
+
+        userService.updateStatus(1L, req, operator);
+
+        verify(userMapper).updateById(any(User.class));
+        verify(auditLogService).record(
+                eq(EntityType.USER), eq(1L), eq(operator),
+                eq(AuditAction.ENABLE_USER.name()),
+                eq("false"), eq("true"), eq(AuditResult.SUCCESS), eq(null));
     }
 
     @Test
