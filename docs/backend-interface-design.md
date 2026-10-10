@@ -89,7 +89,7 @@ com.srm.core
 |---|---|---|
 | id | Long | PK |
 | supplier_id | Long | FK |
-| period_start / period_end | LocalDate | 与 supplier_id 组合做"同周期唯一在途"校验（服务层校验，非 DB 唯一约束，见 §4.4） |
+| period_start / period_end | LocalDate | 与 supplier_id 组合做"同周期唯一在途"校验：服务层预检 + DB 虚拟生成列唯一索引 `uk_supplier_active_period` 兜底（见数据库设计文档 §5「在途唯一性」） |
 | mode | String | `manual` \| `mock`，仅记录取数方式，不影响算分逻辑 |
 | total_batches / delayed_batches | Integer | 事实字段（交付） |
 | avg_delay_days | BigDecimal | |
@@ -118,7 +118,7 @@ com.srm.core
 |---|---|---|
 | id | Long | PK |
 | supplier_id | Long | FK |
-| type | String（`LifecycleRequestType` 枚举） | SUSPEND / RESUME |
+| type | String（`LifecycleRequestType` 枚举） | SUSPEND / RESUME / ELIMINATE |
 | reason | String | 必填 |
 | status | String（`LifecycleRequestStatus` 枚举） | PENDING / APPROVED / REJECTED |
 | applied_by | Long | FK |
@@ -132,11 +132,11 @@ com.srm.core
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | id | Long | PK |
-| entity_type | String（`EntityType` 枚举） | SUPPLIER / PERFORMANCE_EVALUATION / LIFECYCLE_REQUEST |
+| entity_type | String（`EntityType` 枚举） | SUPPLIER / PERFORMANCE_EVALUATION / LIFECYCLE_REQUEST / USER |
 | entity_id | Long | |
 | operator_id | Long | FK |
 | operator_role | String（`Role` 枚举） | 落库时的快照角色，不随用户后续改角色变化 |
-| action | String | 如 SUBMIT / AUDIT_APPROVE / AUDIT_REJECT / SUSPEND_APPROVE ... |
+| action | String | 如 SUBMIT / AUDIT_APPROVE / AUDIT_REJECT / DECISION_APPROVE / DECISION_REJECT（停用/恢复/淘汰统一用 DECISION_*，见数据库设计文档 §8） |
 | old_status / new_status | String（可空） | |
 | result | String（`AuditResult` 枚举） | SUCCESS / REJECTED |
 | comment | String（可空） | |
@@ -222,7 +222,7 @@ public interface PerformanceEvaluationService {
 }
 ```
 
-- `create` 内部流程：① 按 `request.mode` 从 `Map<String, PerformanceMetricProvider>` 取 provider → `provider.resolveFacts(request, supplier)` 得到 `PerformanceFactRecord`；② 查询该 `supplier_id` 是否已有非终态（`PENDING_REVIEW`/`RETURNED`）记录同 `period_start`/`period_end`，存在则 `ErrorCode.DUPLICATE_IN_PROGRESS`（`40902`）；③ 查询该供应商资质是否有过期 → 得到 `qualificationsExpired: boolean`；④ `PerformanceScoreCalculator.calculate(factRecord, qualificationsExpired)` 得到 `PerformanceEvaluationResult`；⑤ 落库，`status=PENDING_REVIEW`。
+- `create` 内部流程：① 按 `request.mode` 从 `Map<String, PerformanceMetricProvider>` 取 provider → `provider.resolveFacts(request, supplier)` 得到 `PerformanceFactRecord`；② 查询该 `supplier_id` 是否已有非终态（`PENDING_REVIEW`/`RETURNED`）记录同 `period_start`/`period_end`，存在则 `ErrorCode.DUPLICATE_IN_PROGRESS`（`40902`）；并发竞态由 DB 唯一索引 `uk_supplier_active_period` 兜底，INSERT 命中 `DuplicateKeyException` 同样转译 `40902`；③ 查询该供应商资质是否有过期 → 得到 `qualificationsExpired: boolean`；④ `PerformanceScoreCalculator.calculate(factRecord, qualificationsExpired)` 得到 `PerformanceEvaluationResult`；⑤ 落库，`status=PENDING_REVIEW`；⑥ 写 `AuditLog(action=SUBMIT, entity_type=PERFORMANCE_EVALUATION)`（一步式发起评价复用 SUBMIT 动作，靠 entity_type 与供应商建档区分）。
 - `update`：仅 `status=RETURNED` 且本人可调用，重新走②之后的④⑤（沿用同一行 `id`，不新建）。
 - `review`：`APPROVE` → `status=APPROVED`，同步回写 `Supplier.latest_performance_grade`/`risk_warning`；`REJECT` → `status=RETURNED`，`comment` 必填。
 
@@ -236,15 +236,15 @@ public interface LifecycleRequestService {
 }
 ```
 
-- `create`：`type=SUSPEND` 要求 `supplier.status==NORMAL`；`type=RESUME` 要求 `supplier.status==SUSPENDED`；已存在同 `supplier_id`+`type` 的 `PENDING` 记录 → `40902`。
-- `decide`：`APPROVE` 时才联动 `SupplierService`（内部方法，非对外接口）把供应商状态置 `SUSPENDED`/`NORMAL`；`REJECT` 只改本记录状态。全程写 `AuditLog(entity_type=LIFECYCLE_REQUEST)`。
+- `create`：`type=SUSPEND` 要求 `supplier.status==NORMAL`；`type=RESUME` 要求 `supplier.status==SUSPENDED`；`type=ELIMINATE` 要求 `supplier.status` 为 `NORMAL` 或 `SUSPENDED`；供应商已处终态 `ELIMINATED` 时拒绝任何新申请；已存在同 `supplier_id`+`type` 的 `PENDING` 记录 → `40902`（并发兜底：DB 唯一索引 `uk_supplier_active_lifecycle`，命中 `DuplicateKeyException` 转译 40902，见数据库设计文档 §7）。
+- `decide`：首先校验 `request.version` 与关联供应商当前 `version` 一致（对齐 §0 乐观锁铁律），不一致 → `ErrorCode.OPTIMISTIC_LOCK_CONFLICT`（`40901`）；`APPROVE` 时才联动 `SupplierService`（内部方法，非对外接口）把供应商状态置 `SUSPENDED`/`NORMAL`/`ELIMINATED`（`type=ELIMINATE` 通过后为终态，之后不可再建任何申请）；`REJECT` 只改本记录状态。全程写 `AuditLog(entity_type=LIFECYCLE_REQUEST)`。
 
 ### 4.6 `AuditLogService`
 
 ```java
 public interface AuditLogService {
     void record(EntityType entityType, Long entityId, UserPrincipal operator,
-                String action, SupplierStatus oldStatus, SupplierStatus newStatus,
+                String action, String oldStatus, String newStatus,
                 AuditResult result, String comment);
     PageResult<AuditLogResponse> list(String entityType, Long entityId, int page, int pageSize);
 }
@@ -425,7 +425,7 @@ DTO 的字段定义以 `docs/api-spec.md` 对应 TS `interface` 为唯一事实�
 | `AuditLogResponse` | 同名 | `dto.auditlog` |
 | `UserResponse` / `UserCreateRequest` | 同名 | `dto.user` |
 
-- Jackson 全局配置 `PropertyNamingStrategies.SNAKE_CASE`（在 `application.yml` 的 `spring.jackson.property-naming-strategy` 或一个 `Jackson2ObjectMapperBuilderCustomizer` bean 里设置一次），DTO 字段本身用标准 Java camelCase 命名（如 `taxNo`），**不需要**逐字段写 `@JsonProperty("tax_no")`。
+- DTO 字段命名采用**显式映射**口径：每个与前端契约对齐的字段均显式标注 `@JsonProperty("snake_case")`（如 `@JsonProperty("tax_no")`），**不依赖** `PropertyNamingStrategies.SNAKE_CASE` 全局配置（依据 rules.md §1 与项目既定决策：显式注解可杜绝映射遗漏导致的字段丢失）。
 - 再次强调：`PerformanceFactRecord` 及所有 `*CreateRequest`/`*UpdateRequest` 里**物理上不能出现**任何分数/评级字段——这不是校验层面的约束，是类定义层面就不应该有这个字段。
 
 ---
@@ -489,9 +489,9 @@ public class BusinessException extends RuntimeException {
 }
 
 public enum ErrorCode {
-    SUCCESS(0), VALIDATION_FAILED(40001), UNAUTHORIZED(40101), INVALID_CREDENTIALS(40102), FORBIDDEN(40301),
+    SUCCESS(0), VALIDATION_FAILED(40001), UNAUTHORIZED(40101), LOGIN_FAILED(40102), FORBIDDEN(40301),
     STATUS_NOT_ALLOWED(40302), NOT_FOUND(40401), OPTIMISTIC_LOCK_CONFLICT(40901),
-    DUPLICATE_IN_PROGRESS(40902), INTERNAL_ERROR(50001);
+    DUPLICATE_IN_PROGRESS(40902), USERNAME_DUPLICATE(40903), INTERNAL_ERROR(50001);
     final int value;
 }
 

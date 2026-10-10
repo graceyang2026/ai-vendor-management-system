@@ -28,6 +28,12 @@
 - **When** AUDITOR 用 `version = 3` 调用 `POST /suppliers/{id}/audit`
 - **Then** 返回 `40901`（并发冲突），供应商状态不发生变化，前端需重新拉取详情后重试
 
+#### 生命周期裁决并发冲突（停用/恢复/淘汰 decision）
+
+- **Given** 一条 `PENDING` 生命周期申请关联的供应商 `version = 5`，AUDITOR 已读取该 `version`；期间另一并发操作已将供应商 `version` 改为 `6`
+- **When** AUDITOR 用 `version = 5` 调用 `POST /lifecycle-requests/{id}/decision`（`LifecycleDecisionRequest` 携带 `version`）
+- **Then** 返回 `40901`（`OPTIMISTIC_LOCK_CONFLICT`，并发冲突），供应商状态与申请记录均不发生变化，生命周期状态不联动，前端需重新拉取详情后重试
+
 ### 1.3 停用/恢复/淘汰必须走两步 LifecycleRequest，不能一步到位
 
 - **Given** 供应商状态为 `NORMAL`
@@ -49,7 +55,7 @@
 ### 1.4 同一供应商同一考核周期只允许一张在途绩效评价单
 
 - **Given** 供应商已存在一张 `status=PENDING_REVIEW` 的正式绩效评价（`supplier_id` + `period_start`/`period_end` 相同）
-- **When** STAFF 对同一供应商、同一周期再次调用 `POST /performance/evaluations/drafts/{id}/submit`
+- **When** STAFF 对同一供应商、同一周期再次调用 `POST /performance/evaluations`
 - **Then** 返回 `40902`，不会生成第二张评价单，也不会触发第二次算分
 
 ---
@@ -58,20 +64,20 @@
 
 ### 2.1 前端物理上无法提交或覆盖分数/评级
 
-- **Given** 任意 `PerformanceEvaluationDraftCreateRequest` 或 `PUT /performance/evaluations/drafts/{id}` 的请求体
+- **Given** 任意 `PerformanceEvaluationCreateRequest` 或 `PUT /performance/evaluations/{id}` 的请求体
 - **When** 请求体中包含 `total_score`、`grade`、`score_quality` 等结果字段
 - **Then** 这些字段不属于 `PerformanceFactRecord` 的定义，后端 DTO 反序列化时应被忽略；即使客户端强行塞入，落库的评分结果也必须是由 `PerformanceScoreCalculator` 重新计算的值，不是请求体里的值（验收时对比请求体与落库结果不一致才算通过）
 
 ### 2.2 mock 模式下客户端传入的 fact_record 被忽略而非报错
 
-- **Given** `POST /performance/evaluations/drafts`，`mode=mock`，请求体里仍然带了一份自定义 `fact_record`
-- **When** 草稿创建成功
+- **Given** `POST /performance/evaluations`，`mode=mock`，请求体里仍然带了一份自定义 `fact_record`
+- **When** 评价创建成功
 - **Then** 返回的 `fact_record` 是 `MockDataMetricAdapter` 生成的数据，不是请求体里传入的值；接口不报错（不是 `40001`）
 
 ### 2.3 算分公式硬编码，不可被参数化影响
 
 - **Given** 一组 `fact_record`：`qc_total_batches=0`
-- **When** 提交草稿并 `submit`
+- **When** 调用 `POST /performance/evaluations` 一步提交
 - **Then** `score_quality=100` 且 `quality_exempt=true`（不因为传入的其他字段变化而改变这条硬编码规则）
 
 - **Given** 一份 `fact_record` 对应四个维度的边界值组合
@@ -86,13 +92,13 @@
 
 ### 2.5 提交后立即锁死，复核通过后不可覆盖旧记录
 
-- **Given** 草稿 `submit` 成功，生成 `status=PENDING_REVIEW` 的正式评价
+- **Given** `POST /performance/evaluations` 成功，生成 `status=PENDING_REVIEW` 的正式评价
 - **When** 原 STAFF 尝试再次编辑该评价的 `fact_record`
 - **Then** 返回 `40302`（仅 `RETURNED` 状态可编辑）
 
 - **Given** 一条评价已被 AUDITOR `APPROVE` 归档
 - **When** 任何角色尝试修改该记录的 `fact_record` 或结果字段
-- **Then** 该记录不可再编辑，也不允许被新的评价覆盖（同周期已有归档记录时，`submit` 应通过 §1.4 的 `40902` 规则被拦截在更早的环节）
+- **Then** 该记录不可再编辑，也不允许被新的评价覆盖（同周期已有归档记录时，`POST /performance/evaluations` 应通过 §1.4 的 `40902` 规则被拦截在更早的环节）
 
 ### 2.6 REJECT 沿用同一条记录，不新建
 
@@ -119,6 +125,6 @@
 - **When** 尝试删除
 - **Then** 不存在物理删除该记录的接口/路径；供应商草稿删除仅允许 `DRAFT` 状态且逻辑删除（`deleted` 字段），数据库中记录仍存在
 
-- **Given** 一条 `status=DRAFT` 的绩效评价草稿
-- **When** 本人 STAFF 调用 `DELETE /performance/evaluations/drafts/{id}`
-- **Then** 逻辑删除成功；但一旦 `submit` 后草稿被置为 `SUBMITTED` 并逻辑删除，不可再通过任何接口恢复或再次提交
+- **Given** 一条已生成的正式绩效评价（`PENDING_REVIEW`/`APPROVED`/`RETURNED`）
+- **When** 任何角色尝试删除
+- **Then** 不存在删除正式评价的接口/路径（绩效无对外草稿态）；正式评价一旦生成即不可物理删除，`RETURNED` 只能通过 `PUT /performance/evaluations/{id}` 改事实重提（沿用同 id）

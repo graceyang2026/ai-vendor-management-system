@@ -55,7 +55,7 @@
 - 新增或修改的类/方法必须使覆盖率不低于合并前水平。
 - 覆盖率校验脚本：`.qoder/skills/check-coverage.sh`（后端 JaCoCo + 前端 `npm run build` 二合一）。
 - 算分引擎专项测试脚本：`.qoder/skills/test-performance.sh`。
-- 覆盖率自愈子代理：`.qoder/agents/coverage-fixer.json`（`coverage-fixer`），当覆盖率不达标时自动分析 JaCoCo 报告并补充测试用例。
+- 覆盖率自愈子代理：`.qoder/agents/coverage-fixer.md`（`coverage-fixer`），当覆盖率不达标时自动分析 JaCoCo 报告并补充测试用例。
 
 ## 4. 业务领域规则（源自 `docs/TDD.docx` 技术设计文档）
 

@@ -199,6 +199,7 @@ expiry_date < 当前日期
 | created_at | DATETIME | 是 | CURRENT_TIMESTAMP | 创建时间 |
 | updated_at | DATETIME | 是 | CURRENT_TIMESTAMP | 更新时间 |
 | deleted | TINYINT(1) | 是 | 0 | 逻辑删除 |
+| active_period_key | VARCHAR(128) | 虚拟生成列 | NULL | 在途周期唯一键，DDL 见下文「在途唯一性」 |
 
 ### mode
 
@@ -232,6 +233,7 @@ INDEX(status)
 INDEX(created_by)
 INDEX(supplier_id, period_start, period_end)
 INDEX(supplier_id, status)
+UNIQUE KEY uk_supplier_active_period (active_period_key)   -- 虚拟生成列，见下文「在途唯一性」
 ```
 
 ### 关联
@@ -242,61 +244,38 @@ performance_evaluation.created_by → sys_user.id
 performance_evaluation.reviewed_by → sys_user.id
 ```
 
+### 在途唯一性（裁决 20261010：DB 层封堵 40902 并发破功）
+
+「同 `supplier_id` + 同周期仅一张在途（`PENDING_REVIEW`/`RETURNED`）」原为应用层校验（api-spec 40902）。并发 create 双检查同时通过会插出两张在途单，故增加虚拟生成列 + 唯一索引兜底：
+
+```sql
+-- 仅当未删除且状态为在途（PENDING_REVIEW, RETURNED）时有值，其余状态为 NULL（NULL 不参与唯一约束）
+`active_period_key` VARCHAR(128) GENERATED ALWAYS AS (
+    CASE
+        WHEN deleted = 0 AND status IN ('PENDING_REVIEW', 'RETURNED')
+        THEN CONCAT(supplier_id, '_', period_start, '_', period_end)
+        ELSE NULL
+    END
+) VIRTUAL COMMENT '在途周期唯一键防重保护',
+
+UNIQUE KEY `uk_supplier_active_period` (`active_period_key`)
+```
+
+> 说明：
+> - 表中无 `assessment_period` 列，周期由 `period_start` + `period_end` 两列表达，故键取 `supplier_id_period_start_period_end`（DATE 参与 CONCAT 自动转 `YYYY-MM-DD`，无二义性）。
+> - 应用层 40902 预检**保留**（给出友好报错）；DB 唯一索引是并发兜底，命中 `DuplicateKey` 时 Service 层捕获并转译 `40902 DUPLICATE_IN_PROGRESS`。
+> - `deleted = 0` 已折进生成列条件：逻辑删除的记录键位自动 NULL、不再阻塞同周期新建，无需额外处理状态。
+> - **落地时机**：`schema.sql` 建表语句的本列为准 DDL 变更归后端实现任务卡（本轮仅文档）。
+
 ---
 
-# 6. 绩效评价草稿表 `performance_evaluation_draft`
+# 6. （已废弃删除）绩效评价草稿表
 
-保存绩效评价提交前的客观事实明细草稿，对应 TDD 6.2 节 D4_1 `PerformanceEvaluationDraft`。STAFF 发起评价、录入事实数据阶段落此表；提交后由算分引擎读取草稿计算得分，写入 `performance_evaluation`，草稿随即逻辑删除。
-
-| 字段 | 类型 | 必填 | 默认值 | 说明 |
-|---|---|---|---|---|
-| id | BIGINT | 是 | - | 主键 |
-| supplier_id | BIGINT | 是 | - | 供应商 ID |
-| period_start | DATE | 是 | - | 评价开始日期 |
-| period_end | DATE | 是 | - | 评价结束日期 |
-| mode | VARCHAR(20) | 是 | manual | 计算模式 |
-| fact_record | JSON | 否 | NULL | 原始事实数据 |
-| status | VARCHAR(20) | 是 | DRAFT | 草稿状态 |
-| created_by | BIGINT | 是 | - | 创建人 |
-| created_at | DATETIME | 是 | CURRENT_TIMESTAMP | 创建时间 |
-| updated_at | DATETIME | 是 | CURRENT_TIMESTAMP | 更新时间 |
-| deleted | TINYINT(1) | 是 | 0 | 逻辑删除 |
-
-### mode
-
-```text
-manual
-mock
-```
-
-### status
-
-```text
-DRAFT
-SUBMITTED
-```
-
-### 索引
-
-```text
-INDEX(supplier_id)
-INDEX(created_by)
-INDEX(status)
-INDEX(supplier_id, period_start, period_end)
-```
-
-### 关联
-
-```text
-performance_evaluation_draft.supplier_id → supplier.id
-performance_evaluation_draft.created_by → sys_user.id
-```
-
-### 业务规则
-
-- 草稿不做同周期唯一性校验，唯一性校验在提交（生成 `performance_evaluation` 记录）时进行。
-- `mode = mock` 时，`fact_record` 在创建草稿时由后端自动生成，不允许编辑。
-- 提交成功后草稿逻辑删除，不可再编辑或再次提交。
+> **裁决（20261010，方案 A）**：绩效评价改为**一步式提交** `POST /performance/evaluations`，由算分引擎直接算分并落主表 `performance_evaluation`，**不设草稿、不再存在 `performance_evaluation_draft` 表及其 `DRAFT/SUBMITTED` 状态机**。原 TDD D4_1 `PerformanceEvaluationDraft` 实体作废。
+>
+> **精准区分**：`supplier.status` 的 `DRAFT`（供应商建档草稿）仍然合法保留，不受本次删除影响；被删除的仅是绩效域的 `PERFORMANCE_EVALUATION_DRAFT` 概念。审计 `EntityType` 亦不再包含 `PERFORMANCE_EVALUATION_DRAFT`。
+>
+> **落地时机**：`schema.sql` 的 `CREATE TABLE performance_evaluation_draft` 及后端/前端相关映射归入实现任务卡一并移除（本轮仅文档）。
 
 ---
 
@@ -342,6 +321,7 @@ REJECTED
 INDEX(supplier_id)
 INDEX(status)
 INDEX(supplier_id, type, status)
+UNIQUE KEY uk_supplier_active_lifecycle (active_key)   -- 虚拟生成列，见下文
 ```
 
 ### 关联
@@ -351,6 +331,20 @@ lifecycle_request.supplier_id → supplier.id
 lifecycle_request.applied_by → sys_user.id
 lifecycle_request.decided_by → sys_user.id
 ```
+
+### 在途唯一性（裁决 20261010 连带）
+
+backend §4.5「同 `supplier_id`+`type` 已有 `PENDING` → 40902」与绩效在途属**同类并发破功点**，同法封堵：
+
+```sql
+`active_key` VARCHAR(64) GENERATED ALWAYS AS (
+    CASE WHEN deleted = 0 AND status = 'PENDING' THEN CONCAT(supplier_id, '_', type) ELSE NULL END
+) VIRTUAL COMMENT '同供应商同类型仅一张进行中申请',
+
+UNIQUE KEY `uk_supplier_active_lifecycle` (`active_key`)
+```
+
+> 应用层预检保留；命中 `DuplicateKey` 转译 40902。`schema.sql` DDL 变更同归后端实现任务卡。
 
 ---
 
@@ -379,7 +373,6 @@ lifecycle_request.decided_by → sys_user.id
 ```text
 SUPPLIER
 PERFORMANCE_EVALUATION
-PERFORMANCE_EVALUATION_DRAFT
 LIFECYCLE_REQUEST
 USER
 ```
@@ -403,6 +396,8 @@ DISABLE_USER
 > `entity_type = LIFECYCLE_REQUEST` 时，`DECISION_APPROVE`/`DECISION_REJECT` 统一表示停用/恢复/淘汰三种申请类型的决策，具体申请类型看关联的 `lifecycle_request.type`，不在 `action` 里再拆分成 `SUSPEND_APPROVE`/`RESUME_APPROVE`/`ELIMINATE_APPROVE` 等。
 >
 > `entity_type = USER` 时，`CREATE_USER`/`UPDATE_USER`/`ENABLE_USER`/`DISABLE_USER` 表示管理员对用户账号的创建/资料角色修改/启用/停用，`entity_id` 为目标用户 ID，`old_status`/`new_status` 记录 `sys_user.enabled` 的变化（新增时 `old_status` 为空）。
+>
+> `entity_type = PERFORMANCE_EVALUATION` 且一步式发起评价时，`action` **复用 `SUBMIT`**（提交送审语义），靠 `entity_type` 与供应商建档的 `SUBMIT` 区分；评价审核用 `REVIEW_APPROVE`/`REVIEW_REJECT`。
 
 ### result
 
@@ -432,8 +427,6 @@ sys_user
    │
    ├────────────── performance_evaluation.reviewed_by
    │
-   ├────────────── performance_evaluation_draft.created_by
-   │
    ├────────────── lifecycle_request.applied_by
    │
    ├────────────── lifecycle_request.decided_by
@@ -446,8 +439,6 @@ supplier
    ├── supplier_qualification
    │
    ├── performance_evaluation
-   │
-   ├── performance_evaluation_draft
    │
    └── lifecycle_request
 ```
@@ -491,7 +482,7 @@ Qoder 建表时遵循以下规则：
 5. 外键关系按本文档处理，但**不建物理 `FOREIGN KEY` 约束**——所有关联仅为逻辑关系，引用完整性由应用层（Service/Mapper）维护，不在 DDL 里写 `FOREIGN KEY`（物理外键会和逻辑删除语义打架，也不利于迁移 KingbaseES）。
 6. `supplier.tax_no` 的唯一性通过生成列 `tax_no_active`（`IF(deleted = 0, tax_no, NULL)`）+ `UNIQUE(tax_no_active)` 实现，逻辑删除的记录不占用税号；不要直接对 `tax_no` 建普通 `UNIQUE` 索引，见第 3 节业务规则。
 7. `sys_user.username` 唯一（当前无删除接口，暂用普通 `UNIQUE` 索引即可；若后续给用户增加删除功能，需按第 6 条同样的生成列思路改造）
-8. `performance_evaluation.fact_record`、`performance_evaluation_draft.fact_record` 使用 JSON
+8. `performance_evaluation.fact_record` 使用 JSON
 9. 绩效分数字段使用 `DECIMAL(5,2)`
 10. `version` 用于乐观锁
 11. 查询频繁的状态、供应商 ID、创建人字段建立索引

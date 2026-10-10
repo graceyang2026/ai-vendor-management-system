@@ -6,7 +6,8 @@ import type { AuditLogRecord } from '@/types/audit-log'
  *
  * 注意：后端 AuditAction 目前只有 SUBMIT / AUDIT_* / REVIEW_* / DECISION_* 七个码，
  * 原型业务员的"新增档案 / 修改档案 / 逻辑删除草稿 / 申请变更状态 / 申请恢复合作"无对应码值，
- * 故本示例只保留能用真实码表达的记录（提交送审=SUBMIT，绩效事实提交=SUBMIT + DRAFT 对象）；
+ * 故本示例只保留能用真实码表达的记录（供应商建档送审=SUBMIT + SUPPLIER 对象，
+ * 一步式绩效事实提交=SUBMIT + PERFORMANCE_EVALUATION 对象，草稿对象类型已废弃）；
  * 待后端补充 CRUD 动作码后再扩充，前端不自造码。
  */
 export const SUPPLIER_LOG_DEMO_LIST: AuditLogRecord[] = [
@@ -87,14 +88,14 @@ export const SUPPLIER_LOG_DEMO_LIST: AuditLogRecord[] = [
   },
   {
     id: 6,
-    entity_type: 'PERFORMANCE_EVALUATION_DRAFT',
+    entity_type: 'PERFORMANCE_EVALUATION',
     entity_id: 301,
     operator_id: 2,
     operator_name: '杨伟',
     operator_role: 'STAFF',
     action: 'SUBMIT',
-    old_status: 'DRAFT',
-    new_status: 'SUBMITTED',
+    old_status: null,
+    new_status: 'PENDING_REVIEW',
     result: 'SUCCESS',
     comment: '提交 2026 年 Q3 客观履约事实数据，算分与评级由后端引擎计算',
     created_at: '2026-09-18T16:35:27',

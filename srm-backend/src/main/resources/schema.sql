@@ -113,7 +113,21 @@ CREATE TABLE IF NOT EXISTS performance_evaluation (
     created_at       DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at       DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '更新时间',
     deleted          TINYINT(1)    NOT NULL DEFAULT 0      COMMENT '逻辑删除',
+    -- 在途唯一性生成列(DB 表设计 §5「在途唯一性」,裁决 20261010: DB 层封堵 40902 并发破功):
+    -- 同 supplier_id + 同周期仅允许一张在途(PENDING_REVIEW/RETURNED)评价单。
+    -- 仅未删除且状态在途时有值,其余情况返回 NULL(NULL 不参与唯一约束),故已归档/已逻辑删除的历史
+    -- 记录不会阻塞同周期新建。应用层 40902 预检保留(给友好报错),本唯一索引是并发兜底,
+    -- Service 层命中 DuplicateKey 时转译 40902 DUPLICATE_IN_PROGRESS。
+    -- 不对业务代码暴露(实体类不映射该列)。周期无 assessment_period 列,由 start+end 表达,
+    -- DATE 参与 CONCAT 自动转 YYYY-MM-DD,无二义性。
+    active_period_key   VARCHAR(128) GENERATED ALWAYS AS (
+        CASE WHEN deleted = 0 AND status IN ('PENDING_REVIEW','RETURNED')
+             THEN CONCAT(supplier_id, '_', period_start, '_', period_end)
+             ELSE NULL
+        END
+    ) VIRTUAL COMMENT '在途周期唯一键防重保护',
     PRIMARY KEY (id),
+    UNIQUE KEY uk_supplier_active_period (active_period_key),
     KEY idx_supplier_id (supplier_id),
     KEY idx_status (status),
     KEY idx_created_by (created_by),
@@ -122,26 +136,13 @@ CREATE TABLE IF NOT EXISTS performance_evaluation (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='绩效评价表';
 
 -- -------------------------------------------------------------
--- 5. 绩效评价草稿表 performance_evaluation_draft
+-- 5. (已删除)绩效评价草稿表 performance_evaluation_draft
+--    裁决 20261010(方案 A, DB 表设计 §6): 绩效评价改为一步式提交
+--    POST /performance/evaluations, 由算分引擎直接算分并落主表
+--    performance_evaluation, 不设草稿, 原建表语句及 DRAFT/SUBMITTED 状态机整体移除。
+--    注意: supplier.status 的 DRAFT(供应商建档草稿)仍然合法保留, 不受影响。
+--    序号 5 保留为空位, 以维持后续小节编号与既有代码注释引用的稳定。
 -- -------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS performance_evaluation_draft (
-    id           BIGINT      NOT NULL AUTO_INCREMENT COMMENT '主键',
-    supplier_id  BIGINT      NOT NULL                COMMENT '供应商 ID',
-    period_start DATE        NOT NULL                COMMENT '评价开始日期',
-    period_end   DATE        NOT NULL                COMMENT '评价结束日期',
-    mode         VARCHAR(20) NOT NULL DEFAULT 'manual' COMMENT '计算模式',
-    fact_record  JSON        NULL                    COMMENT '原始事实数据',
-    status       VARCHAR(20) NOT NULL DEFAULT 'DRAFT' COMMENT '草稿状态',
-    created_by   BIGINT      NOT NULL                COMMENT '创建人',
-    created_at   DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-    updated_at   DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '更新时间',
-    deleted      TINYINT(1)  NOT NULL DEFAULT 0      COMMENT '逻辑删除',
-    PRIMARY KEY (id),
-    KEY idx_supplier_id (supplier_id),
-    KEY idx_created_by (created_by),
-    KEY idx_status (status),
-    KEY idx_supplier_period (supplier_id, period_start, period_end)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='绩效评价草稿表';
 
 -- -------------------------------------------------------------
 -- 6. 生命周期申请表 lifecycle_request
@@ -160,7 +161,17 @@ CREATE TABLE IF NOT EXISTS lifecycle_request (
     created_at       DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at       DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '更新时间',
     deleted          TINYINT(1)    NOT NULL DEFAULT 0      COMMENT '逻辑删除',
+    -- 在途唯一性生成列(DB 表设计 §7「在途唯一性」,裁决 20261010 连带):
+    -- 同 supplier_id + 同 type 仅允许一张 PENDING 申请,与绩效在途属同类并发破功点,同法封堵。
+    -- 应用层预检保留; 命中 DuplicateKey 转译 40902。不对业务代码暴露(实体类不映射该列)。
+    active_key      VARCHAR(64)  GENERATED ALWAYS AS (
+        CASE WHEN deleted = 0 AND status = 'PENDING'
+             THEN CONCAT(supplier_id, '_', type)
+             ELSE NULL
+        END
+    ) VIRTUAL COMMENT '同供应商同类型仅一张进行中申请',
     PRIMARY KEY (id),
+    UNIQUE KEY uk_supplier_active_lifecycle (active_key),
     KEY idx_supplier_id (supplier_id),
     KEY idx_status (status),
     KEY idx_supplier_type_status (supplier_id, type, status)

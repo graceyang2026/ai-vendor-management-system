@@ -1,6 +1,6 @@
 # SRM MVP 前后端 API 契约 (v1)
 
-> 依据 `docs/TDD.docx`（供应商管理系统设计文档 V1.2）与补充需求书 V1.5 制定。本文档是 `srm-backend/` 与 `srm-frontend/` 的唯一共同事实来源（single source of truth）；任何接口变更必须先改这份文档再改代码。
+> 依据 `docs/TDD.docx`（供应商管理系统设计文档 V1.3，基线 2026/09/29）与补充需求书 V1.5 制定。本文档是 `srm-backend/` 与 `srm-frontend/` 的唯一共同事实来源（single source of truth）；任何接口变更必须先改这份文档再改代码。
 
 ## 0. 全局约定
 
@@ -226,6 +226,7 @@ interface LifecycleRequestCreateRequest {
 interface LifecycleDecisionRequest {
   decision: 'APPROVE' | 'REJECT';
   comment?: string;
+  version: number;                 // 乐观锁版本号（对齐 §0 铁律：决策改供应商带版本 status，不回传或版本不匹配 → 40901）
 }
 ```
 
@@ -306,69 +307,46 @@ interface PerformanceEvaluationResponse {
   review_comment?: string;
 }
 
-type DraftStatus = 'DRAFT' | 'SUBMITTED';
-
-interface PerformanceEvaluationDraftResponse {
-  id: number;
+interface PerformanceEvaluationCreateRequest {
   supplier_id: number;
   period_start: string;
   period_end: string;
-  mode: 'manual' | 'mock';
-  fact_record?: PerformanceFactRecord;
-  status: DraftStatus;
-  created_by: number;
-  created_by_name: string;
-  created_at: string;
-  updated_at: string;
+  mode: 'manual' | 'mock';               // ① 轻量演示标识：mock 由服务端生成事实，manual 用前端事实
+  fact_record?: PerformanceFactRecord;   // mode=manual 必填；mode=mock 即使传入也被忽略
 }
 
-interface PerformanceEvaluationDraftCreateRequest {
-  supplier_id: number;
-  period_start: string;
-  period_end: string;
-  mode: 'manual' | 'mock';
-  fact_record?: PerformanceFactRecord;   // mode=manual 时必填；mode=mock 时即使传了也会被忽略
+interface PerformanceEvaluationUpdateRequest {
+  fact_record: PerformanceFactRecord;    // 仅 RETURNED 状态重提时可改
+  version: number;
 }
 ```
 
-> 对应 TDD 6.2 节 D4_1 `PerformanceEvaluationDraft`（评价草稿表）：STAFF 发起评价、录入客观事实明细时先落草稿；`submit` 才触发算分引擎并生成正式的 `PerformanceEvaluationResponse` 记录（`PENDING_REVIEW`）。**不存在跳过草稿直接一步创建正式评价的接口**——这一点覆盖了本文档此前"没有独立的草稿态 API"的旧结论。
+> 对应 TDD §6 D4_1 `PerformanceEvaluationDraft`：该表**仅为后端算分解耦与过程审计的内部暂存表（Staging Table）**，系统**不向 API 与前端暴露任何【草稿】业务状态或草稿操作接口**（依 TDD 定性 + 用户 2026-10-10「以 TDD 为准」裁决）。STAFF 一次录入客观事实并 `POST /performance/evaluations` 即由后端算分、直接落 `PENDING_REVIEW`；同周期唯一在途校验在本 create 接口内完成。
 
 ### 4.3 接口
 
 | 方法 | 路径 | 角色 | 说明 |
 |---|---|---|---|
-| POST | `/performance/evaluations/drafts` | STAFF | 发起评价，创建草稿，`status=DRAFT` |
-| PUT | `/performance/evaluations/drafts/{id}` | STAFF（本人） | 仅 `status=DRAFT` 且 `mode=manual` 可改 `fact_record` |
-| DELETE | `/performance/evaluations/drafts/{id}` | STAFF（本人） | 仅 `status=DRAFT` 可删，逻辑删除 |
-| GET | `/performance/evaluations/drafts/{id}` | ALL | 草稿详情 |
-| GET | `/performance/evaluations/drafts` | ALL | query: `supplier_id?`, `status?`, `page`, `page_size` |
-| POST | `/performance/evaluations/drafts/{id}/submit` | STAFF（本人） | 见下，提交草稿触发算分，生成正式评价并锁死进入 `PENDING_REVIEW` |
-| PUT | `/performance/evaluations/{id}` | STAFF（本人） | 仅 `status=RETURNED` 可改事实重新提交，重新触发算分 |
+| POST | `/performance/evaluations` | STAFF | 一步发起评价：`mode=manual` 校验事实 / `mode=mock` 服务端生成事实，后端算分并落 `status=PENDING_REVIEW`；同 `supplier_id`+`period` 已有未归档在途（`PENDING_REVIEW`/`RETURNED`）返回 `40902` |
+| PUT | `/performance/evaluations/{id}` | STAFF（本人） | 仅 `status=RETURNED` 可改 `fact_record` 重提，重新触发算分，沿用同一 `id` |
 | POST | `/performance/evaluations/{id}/review` | AUDITOR | 复核：`APPROVE` 归档、`REJECT` 退回 |
 | GET | `/performance/evaluations` | ALL | query: `supplier_id?`, `status?`, `page`, `page_size` |
 | GET | `/performance/evaluations/{id}` | ALL | 详情 |
 
-### `POST /performance/evaluations/drafts`
+### `POST /performance/evaluations`
 
-Request: `PerformanceEvaluationDraftCreateRequest`（见上）
+Request: `PerformanceEvaluationCreateRequest`（见上）
 
 - `mode=manual`：由 `ManualFactInputAdapter` 校验 `fact_record`（非负、`qc_failed_batches ≤ qc_total_batches`、`delayed_batches ≤ total_batches` 等），校验失败 `40001`。
-- `mode=mock`：创建草稿时立即由 `MockDataMetricAdapter` 按种子规则自动生成事实数据并存入草稿（演示/测试专用），**前端传入的 `fact_record` 会被服务端忽略而不是报错**，避免误以为可以借 mock 模式夹带自定义分数；`mock` 草稿的 `fact_record` 不允许后续修改。
-- 创建草稿不做同周期唯一性校验（唯一性校验在 `submit` 时进行）。
-
-Response `data`: `PerformanceEvaluationDraftResponse`
-
-### `PUT /performance/evaluations/drafts/{id}`
-
-仅当前用户是创建人、`status=DRAFT`、`mode=manual` 时可改 `fact_record`，否则 `40302`。Response `data`: `PerformanceEvaluationDraftResponse`。
-
-### `POST /performance/evaluations/drafts/{id}/submit`
-
-- 仅当前用户是创建人且 `status=DRAFT`，否则 `40302`。
-- 同一 `supplier_id` + `period_start`/`period_end` 已存在未归档（`PENDING_REVIEW`/`RETURNED`）正式评价单时返回 `40902`（同周期只允许一张在途评价单，防止多线程算分冲突）。
-- 提交成功后：由 `PerformanceScoreCalculator` 读取草稿 `fact_record` 完成加权计算与评级映射，创建正式评价记录且 `status = PENDING_REVIEW`（评分提交后立即进入待复核且数据不可逆锁死）；草稿本身置 `status=SUBMITTED` 并逻辑删除，不可再编辑或再次提交。
+- `mode=mock`：由 `MockDataMetricAdapter` 按种子规则自动生成客观事实（演示/测试专用），**前端传入的 `fact_record` 被服务端忽略而不是报错**，避免借 mock 模式夹带自定义分数。
+- create 内先查同 `supplier_id`+`period_start`/`period_end` 是否已有未归档（`PENDING_REVIEW`/`RETURNED`）在途评价单，存在则 `40902`（同周期只允许一张在途，防并发算分冲突）。并发竞态由 DB 虚拟生成列唯一索引 `uk_supplier_active_period` 兜底（见《SRM 后端数据库表设计.md》§5「在途唯一性」），命中 `DuplicateKey` 同样返回 `40902`。
+- 通过后由 `PerformanceScoreCalculator` 完成加权计算与评级映射，一步落 `status=PENDING_REVIEW`（提交即锁死，无草稿态）。
 
 Response `data`: `PerformanceEvaluationResponse`
+
+### `PUT /performance/evaluations/{id}`
+
+仅当前用户是创建人且 `status=RETURNED` 时可改 `fact_record` 重提，否则 `40302`；重提重新触发算分，沿用同一条记录（不新建）。Response `data`: `PerformanceEvaluationResponse`。
 
 ### `POST /performance/evaluations/{id}/review`
 
@@ -380,7 +358,7 @@ interface PerformanceReviewDecisionRequest {
   comment?: string;   // REJECT 时必填
 }
 ```
-- `APPROVE`：归档进历史表，形成永久记录，之后不可再编辑；供应商 `latest_performance_grade`/`risk_warning` 同步更新。
+- `APPROVE`：`status → APPROVED`，即**归档态**——同一张 `performance_evaluation` 表内的永久记录，**无独立历史表**（见《SRM 后端数据库表设计.md》§5）；之后不可再编辑；供应商 `latest_performance_grade`/`risk_warning` 同步更新。
 - `REJECT`：`status → RETURNED`，原 STAFF 可通过 `PUT /performance/evaluations/{id}` 改事实重提（沿用同一条记录，不新建，保持"一个考核周期一张单"的约束）。
 
 ---
@@ -390,7 +368,7 @@ interface PerformanceReviewDecisionRequest {
 ```ts
 interface AuditLogResponse {
   id: number;
-  entity_type: 'SUPPLIER' | 'PERFORMANCE_EVALUATION' | 'PERFORMANCE_EVALUATION_DRAFT' | 'LIFECYCLE_REQUEST' | 'USER';
+  entity_type: 'SUPPLIER' | 'PERFORMANCE_EVALUATION' | 'LIFECYCLE_REQUEST' | 'USER';
   entity_id: number;
   operator_id: number;
   operator_name: string;

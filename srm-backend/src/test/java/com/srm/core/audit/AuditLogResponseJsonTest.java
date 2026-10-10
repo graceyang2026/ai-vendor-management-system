@@ -44,8 +44,11 @@ class AuditLogResponseJsonTest {
 
     @Test
     void auditEnumsCoverContractValues() {
+        // 契约源：docs/SRM 后端数据库表设计.md §8 entity_type（4 个值）。
+        // 裁决 20261010（§6）：一步式评价不设草稿，PERFORMANCE_EVALUATION_DRAFT 已从契约中移除。
         assertThat(EntityType.values()).extracting(Enum::name).containsExactly(
-                "SUPPLIER", "PERFORMANCE_EVALUATION", "PERFORMANCE_EVALUATION_DRAFT", "LIFECYCLE_REQUEST", "USER");
+                "SUPPLIER", "PERFORMANCE_EVALUATION", "LIFECYCLE_REQUEST", "USER");
+        assertThat(EntityType.values()).hasSize(4);
         assertThat(AuditResult.values()).extracting(Enum::name).containsExactly("SUCCESS", "REJECTED");
         assertThat(AuditAction.values()).extracting(Enum::name).containsExactly(
                 "SUBMIT", "AUDIT_APPROVE", "AUDIT_REJECT", "REVIEW_APPROVE", "REVIEW_REJECT",

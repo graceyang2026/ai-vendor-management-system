@@ -7,7 +7,10 @@
  * - 【颜色】*_TAG_TYPE 供 el-tag 渲染。
  *
  * 后端来源：
- * - EntityType.java（SUPPLIER / PERFORMANCE_EVALUATION / PERFORMANCE_EVALUATION_DRAFT / LIFECYCLE_REQUEST / USER）
+ * - EntityType.java（SUPPLIER / PERFORMANCE_EVALUATION / LIFECYCLE_REQUEST / USER）
+ *   权威源：docs/SRM 后端数据库表设计.md 第 8 节 entity_type + docs/api-spec.md 第 5 节。
+ *   绩效评价的草稿对象类型已随一步式提交契约删除（表设计第 6 节裁决 20261010），
+ *   后端 EntityType.java 残留枚举值归后端清理任务卡，前端不再映射。
  * - AuditAction.java（7 个动作码）
  * - AuditResult.java（SUCCESS / REJECTED）
  * - api-spec 第 2/3/4 节：SupplierStatus / LifecycleRequestStatus / EvaluationStatus
@@ -17,7 +20,6 @@
 export const ENTITY_TYPE = {
   SUPPLIER: 'SUPPLIER',
   PERFORMANCE_EVALUATION: 'PERFORMANCE_EVALUATION',
-  PERFORMANCE_EVALUATION_DRAFT: 'PERFORMANCE_EVALUATION_DRAFT',
   LIFECYCLE_REQUEST: 'LIFECYCLE_REQUEST',
   USER: 'USER',
 } as const
@@ -79,7 +81,6 @@ export type ElTagType = 'primary' | 'success' | 'info' | 'warning' | 'danger'
 export const ENTITY_TYPE_LABEL_CN: Record<EntityTypeCode, string> = {
   [ENTITY_TYPE.SUPPLIER]: '供应商档案',
   [ENTITY_TYPE.PERFORMANCE_EVALUATION]: '绩效评价单',
-  [ENTITY_TYPE.PERFORMANCE_EVALUATION_DRAFT]: '绩效草稿',
   [ENTITY_TYPE.LIFECYCLE_REQUEST]: '生命周期申请',
   [ENTITY_TYPE.USER]: '用户账号',
 }
@@ -208,7 +209,7 @@ export function getStatusLabel(code?: string | null, entityType?: string | null)
   if (entityType === ENTITY_TYPE.LIFECYCLE_REQUEST) {
     return LIFECYCLE_STATUS_LABEL[code] ?? STATUS_LABEL_COMMON[code] ?? code
   }
-  if (entityType === ENTITY_TYPE.PERFORMANCE_EVALUATION || entityType === ENTITY_TYPE.PERFORMANCE_EVALUATION_DRAFT) {
+  if (entityType === ENTITY_TYPE.PERFORMANCE_EVALUATION) {
     return (
       EVALUATION_STATUS_LABEL[code] ?? SUPPLIER_STATUS_LABEL[code as SupplierStatusCode] ?? STATUS_LABEL_COMMON[code] ?? code
     )
