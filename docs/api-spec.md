@@ -13,6 +13,10 @@
 |  | 2026-10-10 | V1.2 | Qoder | `tax_no` 冲突返回码定案为 `40902`（含生成列释放语义）；40902 释义扩为通用“业务冲突”族（用户裁决：方案 1，不新增码） |
 |  | 2026-10-10 | V1.3 | Qoder | §2 建档校验规则重写为可落地口径：`tax_no` GB32100 十八位正则、`contact_phone` 手机号正则、名称类字段非空与长度、逐字段固定 message；格式先行于唯一性；业务错随 HTTP 200 传输（用户给定直接可落地标准） |
 |  | 2026-10-10 | V1.4 | Qoder | `contact_name` 长度上限由 50 放宽至 64（用户裁决：扩列宽；配套 DDL `VARCHAR(50)`→`VARCHAR(100)`，归后端实现任务卡） |
+|  | 2026-10-11 | V1.5 | Qoder | 四项铁律裁决入契约：① 数据可见性分层隔离（规则 A/B/C，删除“后端不做行级隔离”错误表述）；② 资质上传白名单放开 `NORMAL` 并建立资质审核闭环（新增 `POST /qualifications/{id}/review`）；③ `quality_exempt` 追认为“零业务免考机制”，并补 `total_batches = 0` 时 `D` 的除零未定义分支；④ 事实字段中文别名与 `effective_date`/`expiry_date` 作用域隔离。上游冲突按 **TDD 口径**裁决：AUDITOR 不得绕过 LifecycleRequest 直改供应商状态 |
+|  | 2026-10-11 | V1.6 | Qoder | 权限隔离落地口径改为**复用现有 RBAC 底座**（`@PreAuthorize` + `RoleGuard.requireRole/requireStatusAllowed/requireSelf`，均已实现并有测试），明确不引入部门树/数据权限组多维模型；免考注释改以 **TDD V1.4**（用户 2026-10-11 修订）为 `Q` 分支依据，`D` 分支标为本契约对称扩展、待回写 TDD |
+|  | 2026-10-11 | V1.7 | Qoder | §2 新增“必填与 NULL 分层”口径（用户裁决：应用层强校验 + 数据库兜底防呆），并核到列级事实：`name`/`tax_no` 已为 `NOT NULL` 保持不动，仅 `contact_*`/`address` 允许 `NULL`；本裁决无任何 DDL 变更 |
+|  | 2026-10-11 | V1.8 | Qoder | 【用户裁决：《SRM 后端数据库表设计.md》移出关注范围】本契约升为 **DDL 目标态的唯一权威记录**：§0 新增“目标态 DDL 增量”三项（资质表审核字段、`audit_log.supplier_id`、`EntityType` 增枚举）并逐项附 `schema.sql` 实测现状；全文对那份设计文档的 4 处引用改指 `schema.sql`（现状事实源）或本节增量表（已落地的生成列唯一索引同理改指 `schema.sql`）；§8 `entity_type` 枚举补齐说明以 `EntityType.java` 为源 |
 
 ## 0. 全局约定
 
@@ -43,6 +47,23 @@ interface PageResult<T> {
 - **时间格式**：ISO-8601，如 `2026-09-28T10:00:00`。
 - **乐观锁**：所有会被并发审核的资源（`Supplier`、`PerformanceEvaluation`）响应体都带 `version` 字段；写操作（如审核决策）必须在请求体里回传 `version`，后端用它做 MyBatis-Plus 乐观锁校验，版本不匹配返回 `40901`。
 - **角色枚举** `Role`: `ADMIN` | `STAFF` | `AUDITOR`
+- **数据可见性分层隔离（裁决 20261011，彻底取代旧文“后端不做行级隔离、前端按业务范围内过滤”）**：`GET /suppliers`、`GET /suppliers/{id}`、`GET /suppliers/{id}/qualifications`、`GET /audit-logs` 均由**后端强制隔离**，禁止依赖前端过滤（与本文 §0“前端隐藏不是安全边界”口径一致）：
+  - **规则 A｜私有在途区**：`status IN ('DRAFT','RETURNED')` 的供应商档案，后端强制附加 `created_by = 当前用户`；其他人既查不到也改不了（列表直接过滤掉，详情越权访问返回 `40302`）。
+  - **规则 B｜公有资产区**：`status IN ('NORMAL','SUSPENDED','ELIMINATED')` **不限 `created_by`**，全体登录角色只读共享——供应商一旦准入即公司级公共资产，否则跨业务员协同无法进行。
+  - **规则 C｜审计日志范围**：`STAFF` 只见「本人操作留痕 + 名下资产留痕」，即 `operator_id = 当前用户` OR `supplier_id IN (SELECT id FROM supplier WHERE created_by = 当前用户)`；`AUDITOR` / `ADMIN` 全局可见。
+  - **ADMIN 例外**：因权限矩阵“查看供应商档案与日志 ✓（系统管理需要）”，ADMIN 不受规则 A 的本人限制，但仍是**只读**（写操作一律 `40301`）。
+  - **落地复用现有 RBAC 底座（不新造轮子）**：角色粗粒度拦截沿用 Controller `@PreAuthorize("hasRole('...')")`（`SecurityConfig` 已 `@EnableMethodSecurity`）；本人/状态细粒度校验沿用 `com.srm.core.security.RoleGuard` 已有三方法——`requireRole`→`40301`、`requireStatusAllowed`→`40302`、`requireSelf(ownerId)`→`40302`；当前用户 ID 从 `CurrentUserProvider.require()` 取 `UserPrincipal.getId()`。规则 A/C 的列表隔离只需在查询条件里拼 `created_by` / `supplier_id`，**不引入部门树、数据权限组等多维模型**。
+  - **实现前提（DDL）**：`audit_log` 需新增冗余列 `supplier_id`（见下方「目标态 DDL 增量」②）——该表现无此列，若无此列，“名下资产留痕”无法用单一条件覆盖 `PERFORMANCE_EVALUATION` / `LIFECYCLE_REQUEST` 等非 `SUPPLIER` 实体。
+
+- **目标态 DDL 增量（裁决 20261011；自本文起升为唯一权威记录，《SRM 后端数据库表设计.md》不再作为核对依据）**：数据库**现状事实源为 `srm-backend/src/main/resources/schema.sql`**（下“现状”列均已实测读出）。下列三项属待落地增量，归“供应商业务代码批次”任务卡；未落地前本契约按目标态描述接口行为，后端不得因库里还没这些列而改变接口定义。
+
+| # | 对象 | `schema.sql` / 代码现状 | 需新增（目标态） | 支撑的裁决 |
+|---|---|---|---|---|
+| ① | `supplier_qualification` | 仅 `id`/`supplier_id`/`doc_type`/`file_url`/`effective_date`/`expiry_date`/`created_at`/`updated_at`/`deleted` | `status VARCHAR(30) NOT NULL DEFAULT 'PENDING_REVIEW'`、`reviewed_by BIGINT NULL`、`reviewed_at DATETIME NULL`、`review_comment VARCHAR(500) NULL` | 资质审核闭环：`NORMAL` 下补传必须承载“待审核版本”；同一 `supplier_id`+`doc_type` 只允许一条 `APPROVED` |
+| ② | `audit_log` | 无 `supplier_id` 列（现有索引：`entity_type+entity_id`、`operator_id`、`created_at`） | `supplier_id BIGINT NULL` + `KEY idx_supplier_id (supplier_id)`；写日志时冗余写入归属供应商 ID | 规则 C 审计行级隔离：`supplier_id IN (本人创建供应商)` 需用单一条件覆盖非 `SUPPLIER` 实体留痕 |
+| ③ | `EntityType` 枚举（`audit/EntityType.java`） | 仅 `SUPPLIER`/`PERFORMANCE_EVALUATION`/`LIFECYCLE_REQUEST`/`USER` 四值 | 增 `SUPPLIER_QUALIFICATION` | 资质上传/审核动作可审计（`/qualifications/{id}/review` 全量写 `AuditLog`） |
+
+  已落地的同类范式（无需新增，实现 ①② 时照抄写法即可）：`performance_evaluation.active_period_key` + `uk_supplier_active_period`、`lifecycle_request.active_key` + `uk_supplier_active_lifecycle` 都是“逻辑删除友好的虚拟生成列 + 部分唯一索引”；若需强约束“同一类型仅一条 `APPROVED`”，同法用生成列实现，不引入触发器。
 
 ---
 
@@ -89,6 +110,8 @@ MVP 演示账号（启动时按需播种，仅当 `users` 表为空）：`admin/
 ### 状态机
 
 `DRAFT`（草稿/待提交） → `PENDING_REVIEW`（待审核，AUDITOR 审核中）→ 通过 → `NORMAL`（正常合作）；驳回 → `RETURNED`（待修改/已驳回，STAFF 改后可重新 `submit` 回到 `PENDING_REVIEW`）。`NORMAL ⇄ SUSPENDED`（停用/恢复）只能通过第 3 节的生命周期申请流转，不允许直接 PATCH 状态字段。`NORMAL`/`SUSPENDED` → `ELIMINATED`（淘汰，终态、不可逆；须经第 3 节生命周期申请流程：STAFF 提交 `ELIMINATE` 申请，AUDITOR 审批通过后生效，不允许 AUDITOR 跳过申请直接变更状态）。
+
+> **上游冲突已裁决（20261011，站 TDD）**：SRS V1.5 §4「资质控制机制」原句“…或由审计员视风险程度，手动将该供应商状态变更为‘停用’”与 TDD《资质过期与风险预警》“不允许 AUDITOR 绕过流程直接修改状态”相悖。按 **TDD 口径**定案：停用只能由 STAFF 提 `SUSPEND` 申请、AUDITOR 在 `POST /lifecycle-requests/{id}/decision` 裁决；**本契约不提供任何直接改 `supplier.status` 的旁路接口**。SRS 侧对应修订已列入待办（需用户确认后才能动 DOCX），修订前以本文为准。
 
 `SupplierStatus` = `'DRAFT' | 'PENDING_REVIEW' | 'NORMAL' | 'RETURNED' | 'SUSPENDED' | 'ELIMINATED'`
 
@@ -152,6 +175,8 @@ type SupplierUpdateRequest = Partial<SupplierCreateRequest>;
 
 **唯一性**：`tax_no` 全局唯一（数据库唯一索引 + 应用层预检，撞未删除供应商的已有税号返回 `40902`；被逻辑删除供应商的税号因生成列 `tax_no_active` 置 NULL 而不占用，允许重新建档）——格式校验（`40001`）先行，唯一性校验（`40902`）在后。
 
+**必填与 NULL 分层（裁决 20261011）**：必填靠**应用层强校验**实现，不靠数据库约束——DTO 上用 `@NotBlank`/`@NotNull`/`@Pattern`，缺项或非法一律在 Controller 层被 `40001` 拦下。数据库侧保持现状：`name`/`tax_no` 已是 `NOT NULL` 的列**不动**（当兜底防呆），`contact_name`/`contact_phone`/`contact_email`/`address` 等允许 `NULL` 的列**不收紧**（保留历史数据兼容性，避免后续加字段或灰度迁移时因存量脏数据导致 DDL 报错）。两层不冲突：写入路径严格拦，读取路径允许列为 `null` 并按空值展示。本裁决**不产生任何 DDL 变更**。
+
 **传输方式**：本节所有 `40001` 失败**仍随 HTTP 200 返回**，错信息在统一响应体的 `code`/`message` 里（已实现：`GlobalExceptionHandler` 直接返回 `ApiResponse`，`@ExceptionHandler(MethodArgumentNotValidException.class)` 取首个字段错误 message；前端 `utils/request.ts` 拦截器同样按 `body.code` 判失败）。本契约不以 HTTP 状态码传递业务错。
 
 ### 接口
@@ -160,13 +185,14 @@ type SupplierUpdateRequest = Partial<SupplierCreateRequest>;
 |---|---|---|---|
 | POST | `/suppliers` | STAFF | 建档，创建 `DRAFT` |
 | PUT | `/suppliers/{id}` | STAFF（本人） | 仅 `DRAFT`/`RETURNED` 可编辑，其余状态 `40302` |
-| GET | `/suppliers` | ALL | query: `status?`, `keyword?`, `page`, `page_size` |
-| GET | `/suppliers/{id}` | ALL | 详情，含最近一次归档绩效评级 |
+| GET | `/suppliers` | ALL（**按 §0 隔离规则**） | query: `status?`, `keyword?`, `page`, `page_size`；STAFF 结果集 = 公有资产区 + 本人草稿/退回；AUDITOR/ADMIN 为全量 |
+| GET | `/suppliers/{id}` | ALL（**按 §0 隔离规则**） | 详情，含最近一次归档绩效评级；命中规则 A 但非本人 → `40302` |
 | DELETE | `/suppliers/{id}` | STAFF（本人） | 仅本人 `DRAFT` 逻辑删除，其余状态 `40302` |
 | POST | `/suppliers/{id}/submit` | STAFF（本人） | `DRAFT`/`RETURNED` → `PENDING_REVIEW`；要求已上传至少一份未过期营业执照资质，否则 `40001` |
 | POST | `/suppliers/{id}/audit` | AUDITOR | 审核决策，见下 |
-| POST | `/suppliers/{id}/qualifications` | STAFF（本人） | 上传资质，仅 `DRAFT`/`RETURNED` |
-| GET | `/suppliers/{id}/qualifications` | ALL | 资质列表 |
+| POST | `/suppliers/{id}/qualifications` | STAFF（本人） | 上传资质，允许状态由 `DRAFT`/`RETURNED` **放宽为 `DRAFT`/`RETURNED`/`NORMAL`**（裁决 20261011：解除“准入后资质无法维护”死锁）；新记录一律落 `status=PENDING_REVIEW`，**不直接生效** |
+| GET | `/suppliers/{id}/qualifications` | ALL（**按 §0 隔离规则**） | 资质列表；默认仅返回 `APPROVED`（现行有效）与 `PENDING_REVIEW`（待审核）记录，`REJECTED` 仅供本人追溯 |
+| POST | `/qualifications/{id}/review` | AUDITOR | 资质审核闭环：`APPROVE` → 新资质置 `APPROVED`，同 `supplier_id`+`doc_type` 的旧资质自动置 `REJECTED`（历史保留不物理删）；`REJECT` → 新资质置 `REJECTED`，**旧资质保持不变**，供应商 `NORMAL` 基础合作状态不受影响 |
 
 ### `POST /suppliers/{id}/audit`
 
@@ -213,10 +239,14 @@ interface QualificationResponse {
   supplier_id: number;
   doc_type: 'BUSINESS_LICENSE' | 'OTHER';
   file_url: string;
-  effective_date: string;
+  effective_date: string;       // 单项证照有效期（与 supplier 表同名字段不同义，见下方说明）
   expiry_date: string;
-  expired: boolean;     // 由 expiry_date < 今天 计算得出
+  status: 'PENDING_REVIEW' | 'APPROVED' | 'REJECTED';   // 新增：裁决 20261011 资质审核闭环
+  expired: boolean;             // 由 expiry_date < 今天 计算得出；仅对 status=APPROVED 参与合规算分
   created_at: string;
+  reviewed_by?: number;         // 新增：审核人
+  reviewed_at?: string;         // 新增：审核时间
+  review_comment?: string;      // 新增：驳回意见
 }
 interface QualificationCreateRequest {
   doc_type: 'BUSINESS_LICENSE' | 'OTHER';
@@ -225,6 +255,14 @@ interface QualificationCreateRequest {
   expiry_date: string;
 }
 ```
+
+**资质审核闭环（裁决 20261011，对应需求“业务员上传及维护资质文件”+ TDD“资质过期人工提 SUSPEND”两者打通）**：
+
+- **提交即审核**：任何状态（含 `NORMAL`）上传的新资质一律落 `PENDING_REVIEW`，不直接参与算分与有效性判定。
+- **平滑过渡无真空**：审核完成前，**旧的 `APPROVED` 资质保持生效位**（即“已过期但仍为现行版”），不会出现“无有效资质”的真空报错；`REJECTED` 记录只作历史追溯，不物理删除。
+- **审核通过联动**：新资质置 `APPROVED` → 同类型旧资质自动置 `REJECTED` → 该 `doc_type` 不再处于过期态 → **`risk_warning` 自动置 `false`，合规得分 `C` 恢复 100**（详见第 4 节）。
+- **审核驳回**：STAFF 重新上传，**期间不影响供应商当前 `NORMAL` 基础合作状态**（仅 `C=0` 与 `risk_warning=true` 的预警保留）。
+- **日期字段作用域**：`supplier.effective_date`/`expiry_date` = **企业合作契约周期**（DB 注释“合作开始/结束日期”）；`supplier_qualification.effective_date`/`expiry_date` = **单项证照有效期**。两者同名不同义，互不联动；**供应商档案 `expiry_date` 到期在 MVP 内不触发任何自动动作**（无定时任务、不自动停用），仅作为展示与合作区间记录（裁决 20261011：“到期行为”明确为空，防止实现者自行发挥）。
 
 ---
 
@@ -287,23 +325,25 @@ interface LifecycleDecisionRequest {
 - `D = MAX(0, 100 - (delayed_batches / total_batches * 100) - avg_delay_days * 2)`
 - `P = MAX(0, 100 - price_deviation_rate * 2)`
 - `S = MAX(0, 100 - complaint_overtime_count * 10)`
-- `C = 100`（资质全部有效），任一资质 `expiry_date` 已过期则 `C = 0` 并置 `risk_warning = true`（合规维度由后端自动读取 `Qualification`，前端不传）。
+- `C = 100`（资质全部有效），任一**现行有效（`status=APPROVED`）**资质 `expiry_date` 已过期则 `C = 0` 并置 `risk_warning = true`（合规维度由后端自动读取 `Qualification`，前端不传）。`PENDING_REVIEW`/`REJECTED` 的资质**不参与**判定；因此审核通过新资质的瞬间，`C` 自动恢复 100 且 `risk_warning` 自动置 `false`（裁决 20261011 闭环）。
 - 综合得分 `= Q*30% + D*25% + P*20% + S*15% + C*10%`
 - 评级：`A ≥ 90`；`80 ≤ B < 90`；`70 ≤ C < 80`；`D < 70`。
 - 评级联动：`A/B` 不触发任何拦截；`C` 维持 `NORMAL` 但 `risk_warning = true`（前端展示预警，不做订单拦截，本期无采购模块）；`D` 只置 `risk_warning = true` 并要求人工走第 3 节的停用申请流程，评价接口本身**不会**自动变更供应商状态。
+
+> **零业务免考机制（Zero-Business Exemption）**：**`qc_total_batches = 0` 分支已写入 TDD V1.4（2026-10-11 修订）**——当期无质检/业务发生则 `Q` 直接计 100 分并标记 `quality_exempt = true`，避免除零异常与无业务期间的虚假扣分。本契约按用户裁决把同一规则**对称扩展到交付维度**：`total_batches = 0` 时 `D` 也计 100 分并复用同一个 `quality_exempt` 标识，同时封住 `D` 公式中 `delayed_batches / total_batches` 的除零未定义缺口（旧版契约只写了 `Q` 分支，属契约遗漏）。`quality_exempt` 列名为历史原因，语义为“当期无业务的整体免考标识”，**不拆分为 `delivery_exempt`**（MVP 不加列）。**待回写上游**：`D` 维度分支需同步补进 TDD，补之前以本契约为准。
 
 ### 4.2 数据结构
 
 ```ts
 interface PerformanceFactRecord {
-  total_batches: number;
-  delayed_batches: number;
-  avg_delay_days: number;
-  qc_total_batches: number;
-  qc_failed_batches: number;
-  major_accidents: number;
-  price_deviation_rate: number;   // %
-  complaint_overtime_count: number;
+  total_batches: number;        // 交付总批次（专用于履约交付维度 D 计算）
+  delayed_batches: number;      // 逾期批次数
+  avg_delay_days: number;       // 平均逾期天数
+  qc_total_batches: number;     // 质检总批次（专用于质量得分 Q 及零业务免考判断）
+  qc_failed_batches: number;    // 质检不合格批数
+  major_accidents: number;      // 重大事故数
+  price_deviation_rate: number;   // 价格偏离率 %
+  complaint_overtime_count: number; // 客诉超时次数
 }
 
 interface PerformanceEvaluationResult {
@@ -370,7 +410,7 @@ Request: `PerformanceEvaluationCreateRequest`（见上）
 
 - `mode=manual`：由 `ManualFactInputAdapter` 校验 `fact_record`（非负、`qc_failed_batches ≤ qc_total_batches`、`delayed_batches ≤ total_batches` 等），校验失败 `40001`。
 - `mode=mock`：由 `MockDataMetricAdapter` 按种子规则自动生成客观事实（演示/测试专用），**前端传入的 `fact_record` 被服务端忽略而不是报错**，避免借 mock 模式夹带自定义分数。
-- create 内先查同 `supplier_id`+`period_start`/`period_end` 是否已有未归档（`PENDING_REVIEW`/`RETURNED`）在途评价单，存在则 `40902`（同周期只允许一张在途，防并发算分冲突）。并发竞态由 DB 虚拟生成列唯一索引 `uk_supplier_active_period` 兜底（见《SRM 后端数据库表设计.md》§5「在途唯一性」），命中 `DuplicateKey` 同样返回 `40902`。
+- create 内先查同 `supplier_id`+`period_start`/`period_end` 是否已有未归档（`PENDING_REVIEW`/`RETURNED`）在途评价单，存在则 `40902`（同周期只允许一张在途，防并发算分冲突）。并发竞态由 DB 虚拟生成列唯一索引 `uk_supplier_active_period` 兜底（**已落地于 `schema.sql`**：`active_period_key` 生成列 + `UNIQUE KEY uk_supplier_active_period`），命中 `DuplicateKey` 同样返回 `40902`。
 - 通过后由 `PerformanceScoreCalculator` 完成加权计算与评级映射，一步落 `status=PENDING_REVIEW`（提交即锁死，无草稿态）。
 
 Response `data`: `PerformanceEvaluationResponse`
@@ -389,7 +429,7 @@ interface PerformanceReviewDecisionRequest {
   comment?: string;   // REJECT 时必填
 }
 ```
-- `APPROVE`：`status → APPROVED`，即**归档态**——同一张 `performance_evaluation` 表内的永久记录，**无独立历史表**（见《SRM 后端数据库表设计.md》§5）；之后不可再编辑；供应商 `latest_performance_grade`/`risk_warning` 同步更新。
+- `APPROVE`：`status → APPROVED`，即**归档态**——同一张 `performance_evaluation` 表内的永久记录，**无独立历史表**（`schema.sql` 中无此类表，且不得新增）；之后不可再编辑；供应商 `latest_performance_grade`/`risk_warning` 同步更新。
 - `REJECT`：`status → RETURNED`，原 STAFF 可通过 `PUT /performance/evaluations/{id}` 改事实重提（沿用同一条记录，不新建，保持"一个考核周期一张单"的约束）。
 
 ---
@@ -399,12 +439,12 @@ interface PerformanceReviewDecisionRequest {
 ```ts
 interface AuditLogResponse {
   id: number;
-  entity_type: 'SUPPLIER' | 'PERFORMANCE_EVALUATION' | 'LIFECYCLE_REQUEST' | 'USER';
+  entity_type: 'SUPPLIER' | 'PERFORMANCE_EVALUATION' | 'LIFECYCLE_REQUEST' | 'USER' | 'SUPPLIER_QUALIFICATION';   // 末项为裁决 20261011 资质审核闭环新增（需后端 `EntityType` 枚举同步增项）
   entity_id: number;
   operator_id: number;
   operator_name: string;
   operator_role: Role;
-  action: string;          // SUBMIT / AUDIT_APPROVE / AUDIT_REJECT / REVIEW_APPROVE / REVIEW_REJECT / DECISION_APPROVE / DECISION_REJECT；用户管理（entity_type=USER）：CREATE_USER / UPDATE_USER / ENABLE_USER / DISABLE_USER，完整枚举见数据库设计文档第8节
+  action: string;          // SUBMIT / AUDIT_APPROVE / AUDIT_REJECT / REVIEW_APPROVE / REVIEW_REJECT / DECISION_APPROVE / DECISION_REJECT；用户管理（entity_type=USER）：CREATE_USER / UPDATE_USER / ENABLE_USER / DISABLE_USER，完整枚举以后端 `audit/AuditAction.java` 为准（当前 11 值，已逐一对应）
   old_status?: string;
   new_status?: string;
   result: 'SUCCESS' | 'REJECTED';
@@ -413,7 +453,7 @@ interface AuditLogResponse {
 }
 ```
 
-`GET /api/v1/audit-logs?entity_type=&entity_id=&page=&page_size=`（ALL 角色可查看，前端按"业务范围内"过滤展示，后端不做行级隔离）。
+`GET /api/v1/audit-logs?entity_type=&entity_id=&page=&page_size=`——**后端强制行级隔离**（裁决 20261011，删除旧版“ALL 角色可查看、前端按业务范围内过滤、后端不做行级隔离”的错误表述）：`STAFF` 仅返回 `operator_id = 当前用户` OR `supplier_id IN (本人创建的供应商)` 的记录；`AUDITOR` / `ADMIN` 全量可见。实现依赖 `audit_log` 新增 `supplier_id` 冗余列与 `SUPPLIER_QUALIFICATION` 枚举项（均见 §0「目标态 DDL 增量」②③）。
 
 ---
 

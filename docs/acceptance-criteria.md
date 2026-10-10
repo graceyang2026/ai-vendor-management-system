@@ -15,6 +15,10 @@
 |  | 2026-10-10 | V1.2 | Qoder | 新增 §1.6 供应商 `tax_no` 全局唯一用例，含软删释放、并发兜底、幂等编辑（用户裁决 ⑤：必须补，TDD 门禁第一道防线） |
 |  | 2026-10-10 | V1.3 | Qoder | 新增 §1.7 建档字段格式校验用例：税号/手机号/名称长度/校验顺序/前后端正则同源（用户给定直接可落地校验标准） |
 |  | 2026-10-10 | V1.4 | Qoder | §1.7 的 `contact_name` 长度用例随契约改为 64 上限（列宽扩至 VARCHAR(100)）（用户裁决：扩列宽） |
+|  | 2026-10-11 | V1.5 | Qoder | 新增 §1.8 资质维护与审核闭环用例：`NORMAL` 可补传、待审核不提前解警、驳回不影响合作状态、同一类型不得两条 APPROVED（用户裁决：解除死锁） |
+|  | 2026-10-11 | V1.6 | Qoder | 新增 §4 权限隔离与数据范围（补齐 SRS §7.1 明列但本文档一直缺失的“权限隔离”验收）、§5 查询响应 ≤3s 轻量性能验收（用户裁决：MVP 拒绝重型压测，用集成测试计时断言 + 慢请求日志告警） |
+|  | 2026-10-11 | V1.7 | Qoder | 补两处裁决用例：§1.7 新增“应用层强校验 + 数据库允许 NULL 共存”分层口径用例；§2.3 新增 `total_batches=0` 的交付维度免考用例（防除零，复用同一 `quality_exempt`）（用户裁决） |
+|  | 2026-10-11 | V1.8 | Qoder | 【用户裁决：《SRM 后端数据库表设计.md》移出关注范围】§1.6 / §1.7 / §1.8 标题与事实核对句中对那份设计文档的 3 处引用全部改指 **`schema.sql`（现状实测）** 与 **api-spec §0「目标态 DDL 增量」（目标态权威源）**；本文档对 DDL 的依赖从此不指向冻结文档 |
 
 ---
 
@@ -80,7 +84,7 @@
 - **When** 未登录或 AUDITOR/ADMIN 调用
 - **Then** 分别返回 `40101`/`40301`（契约限定 STAFF）
 
-### 1.6 供应商 `tax_no` 全局唯一（对应 api-spec 第 2 节校验规则 + 数据库表设计第 3 节）
+### 1.6 供应商 `tax_no` 全局唯一（对应 api-spec 第 2 节校验规则 + `schema.sql` 的 `supplier` 表生成列）
 
 - **Given** 已存在未删除供应商 A，其 `tax_no = T`
 - **When** STAFF 调用 `POST /suppliers` 对另一家供应商提交同一 `tax_no = T`
@@ -113,6 +117,38 @@
 - **When** 分别经前端表单校验与后端 Bean Validation
 - **Then** 两侧使用契约里的同一正则（`^[0-9A-HJ-NPQRTUWXY]{18}$` / `^1[3-9]\d{9}$` / `^\S.{0,62}\S$`），判定结果一致，不得出现“前端放行、后端报错”或反之
 
+**必填分层口径（裁决 20261011：应用层强校验 + 数据库兜底防呆）**
+
+> 事实核对（实测 `srm-backend/src/main/resources/schema.sql` 的 `supplier` 表）：`name`/`tax_no` 已是 `NOT NULL`（保持不动，作为兜底防呆）；`contact_name`/`contact_phone`/`contact_email`/`address` 为 `NULL`，而 SRS 「核心字段规范」将 `contact_name`/`contact_phone` 列为必填——该差异按分层口径处理，**不把数据库列收紧为 NOT NULL**（避免历史数据兼容与后续加字段的 DDL 风险）。
+
+- **Given** `contact_name`/`contact_phone` 在 `schema.sql` 中允许 `NULL`
+- **When** 通过 API 提交建档但缺失这两个必填项
+- **Then** Controller 层 Bean Validation（`@NotBlank`）直接拦下并返回 `40001`，**不依赖数据库 NOT NULL 兜底**；空值不得落入库中
+- **Given** 测试库直接写入一行历史脏数据（`contact_phone = NULL`）
+- **When** 查询列表/详情
+- **Then** 正常返回（该字段为 `null`），不得因读 NULL 而 500——即“写入严、读取宽”分层共存
+- **When** 本次裁决后检查 DDL
+- **Then** `name`/`tax_no` 的 `NOT NULL` **不删也不扩**，其余允许 `NULL` 的列**不改为 NOT NULL**（本次无 DDL 变更）
+
+### 1.8 资质维护与审核闭环（对应 api-spec 第 2 节资质审核闭环 + api-spec §0「目标态 DDL 增量」①）
+
+本用例设立的目的是解除旧契约的死锁：准入（`NORMAL`）后资质过期，旧规则不允许补传，而算分又因过期把 `C` 判 0，导致只能停用/淘汰。裁决 20261011：放开 `NORMAL` 上传 + 建立审核闭环。
+
+- **Given** 一家 `NORMAL` 供应商，营业执照已过期（因此 `C=0`、`risk_warning=true`）
+- **When** 本人 STAFF 调 `POST /suppliers/{id}/qualifications` 上传新营业执照
+- **Then** 返回成功；新记录 `status=PENDING_REVIEW`；**旧记录仍为 `APPROVED`**（现行有效位不变）；`risk_warning` **仍为 `true`**、`C` **仍为 0**——绝不能因为“待审核”就提前解除预警（否则伪造了一个尚未被审核的合规状态）
+- **Given** 上述待审核资质
+- **When** AUDITOR 调 `POST /qualifications/{id}/review`，`decision=APPROVE`
+- **Then** 新资质置 `APPROVED`，同 `supplier_id`+`doc_type` 的旧资质自动置 `REJECTED`（数据库记录仍在，不物理删）→ `risk_warning` 自动置 `false`，后续评价的合规维度 `C` 恢复 100；写入 `AuditLog`（`entity_type=SUPPLIER_QUALIFICATION`，`action=AUDIT_APPROVE`）
+- **When** `decision=REJECT` 但 `comment` 为空
+- **Then** `40001`（与建档审核同口径，驳回必须给理由）
+- **When** `decision=REJECT` 且带 `comment`
+- **Then** 新资质置 `REJECTED`，**旧资质保持 `APPROVED` 不变**，供应商仍为 `NORMAL` 可正常开展业务（仅预警保留）；不得自动转 `SUSPENDED`/`RETURNED`
+- **When** 本人 STAFF 试图审核自己上传的资质，或 ADMIN 试图上传/审核资质
+- **Then** 均返回 `40301`（权限矩阵：上传 ✓ 仅 STAFF，审核 ✓ 仅 AUDITOR，ADMIN ✕ 不参与业务）
+- **When** 一个 `supplier_id`+`doc_type` 出现两条 `APPROVED`
+- **Then** 视为缺陷（契约禁止）；合规算分必须只读现行唯一有效版本，结果不得依赖记录返回顺序
+
 ---
 
 ## §2 绩效评价防篡改（对应 rules.md 4.3）
@@ -134,6 +170,9 @@
 - **Given** 一组 `fact_record`：`qc_total_batches=0`
 - **When** 调用 `POST /performance/evaluations` 一步提交
 - **Then** `score_quality=100` 且 `quality_exempt=true`（不因为传入的其他字段变化而改变这条硬编码规则）
+- **Given** 同一考核期内 `total_batches=0`（当期无交付业务，而 `qc_total_batches>0`）
+- **When** 触发算分
+- **Then** `score_delivery=100`（不得因 `delayed_batches / total_batches` 除零而得到 `NaN`/异常/0 分），且共用同一个 `quality_exempt=true` 标识，**不新增 `delivery_exempt` 列**
 
 - **Given** 一份 `fact_record` 对应四个维度的边界值组合
 - **When** 触发算分
@@ -183,3 +222,55 @@
 - **Given** 一条已生成的正式绩效评价（`PENDING_REVIEW`/`APPROVED`/`RETURNED`）
 - **When** 任何角色尝试删除
 - **Then** 不存在删除正式评价的接口/路径（绩效无对外草稿态）；正式评价一旦生成即不可物理删除，`RETURNED` 只能通过 `PUT /performance/evaluations/{id}` 改事实重提（沿用同 id）
+
+---
+
+## §4 权限隔离与数据范围（对应 SRS §3 权限矩阵 + §7.1 “权限隔离”验收条件 + rules.md 4.1）
+
+> 本节为补齐项：SRS 「核心验收条件」明列“涵盖**权限隔离**…”，但本文档旧版 §1~§3 完全未覆盖。后端已有 RBAC 底座：Controller `@PreAuthorize("hasRole('...')")` 做粗粒度拦截，Service 层 `RoleGuard` 做二次校验（`requireRole`→`40301`、`requireStatusAllowed`/`requireSelf`→`40302`）。
+
+### 4.1 前后端双层校验，前端隐藏不算安全边界
+
+- **Given** 一个已登录但无权的角色（如 ADMIN 请求业务写接口）
+- **When** 绕过前端、直接携合法 token 调接口
+- **Then** 后端仍拒绝：角色不匹配 → `40301`；状态/本人不符 → `40302`；不得因为“前端没显按钮”而默认放行
+
+### 4.2 ADMIN 零业务写（严格管理/业务分离）
+
+- **When** ADMIN 分别调用 `POST /suppliers`、`PUT /suppliers/{id}`、`DELETE /suppliers/{id}`、`submit`、`audit`、`POST /suppliers/{id}/qualifications`、`POST /qualifications/{id}/review`、`lifecycle-requests`、`decision`、`performance/evaluations`
+- **Then** 全部 `40301`（权限矩阵中 ADMIN 对供应商新增/编辑/审批/上传/状态决策均为 ✕）；ADMIN 只能调 `GET` 类与 `/users` 系列
+
+### 4.3 AUDITOR 零业务写，只做决策
+
+- **When** AUDITOR 调用建档/编辑/上传资质/提交/发起评价
+- **Then** 全部 `40301`；只能调 `audit`、`review`、`decision`（均为“最终决策”类动作）
+
+### 4.4 数据可见性分层隔离（裁决 20261011，对应 api-spec §0 规则 A/B/C）
+
+- **Given** STAFF-A 名下有 `DRAFT` 与 `RETURNED` 各一个供应商，STAFF-B 已登录
+- **When** STAFF-B 调 `GET /suppliers`
+- **Then** 结果集**不包含** STAFF-A 的这两个档案（后端拼 `created_by` 条件，而不是返回全量由前端过滤）；直接访问其 ID 的 `GET /suppliers/{id}` → `40302`
+- **Given** 一家 `NORMAL` 供应商由 STAFF-A 创建
+- **When** STAFF-B 或 AUDITOR 查询列表/详情/资质/绩效
+- **Then** 均可见（规则 B：准入即公有资产，全公司只读共享），但 STAFF-B 试图编辑/删除它 → `40302`
+- **Given** STAFF-A 创下的供应商被 AUDITOR 审核驳回过
+- **When** STAFF-A 查 `GET /audit-logs`（规则 C）
+- **Then** 能看到该条记录（自己名下资产的他人操作留痕），判定条件是 `operator_id = 本人` OR `supplier_id IN (本人创建的供应商)`
+- **When** STAFF-B 查同一条件下看不到不属于自己资产的操作记录；而 AUDITOR/ADMIN 查得全量
+- **Then** 隔离生效：STAFF 结果集必须是 AUDITOR 结果集的真子集，且 `audit_log.supplier_id` 冗余列已写入才能跑通本用例
+
+## §5 查询性能基准（对应 SRS §7.1 “普通供应商查询响应时间原则上不超过 3 秒”）
+
+裁决 20261011：MVP **必须验**，但拒绝 JMeter/LoadRunner 重型压测链，采用“集成测试计时断言 + 日志告警”轻量方案。
+
+### 5.1 集成测试硬断言
+
+- **Given** 测试库中预置 1 万条供应商种子数据
+- **When** 在 `SupplierControllerTest` 用 Spring `StopWatch`（或 `System.currentTimeMillis()`）对 `GET /suppliers`（默认 `page_size=20`）与 `GET /suppliers/{id}` 计时
+- **Then** 单次耗时 `< 3000ms`（`assertThat(executionTime).isLessThan(3000L)`）；断言包含分页命中 `total` 正确，防止为了跑赢而退化为全表查询
+
+### 5.2 慢请求日志告警
+
+- **Given** 接口统一经 Web 日志切面记录 `execution_time_ms`（**现状核实：`srm-backend` 目前没有任何 `*Aspect` 切面类，本项属新增代码**，实现时也可用 `HandlerInterceptor` 等效实现）
+- **When** `GET /suppliers` 系列耗时超 `3000ms`
+- **Then** 自动打 `WARN` 日志并带 `[PERF_THRESHOLD_EXCEEDED]` 标识，便于事后追溯与慢查询优化；不得因此中断请求或抛错

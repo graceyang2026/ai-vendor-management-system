@@ -9,6 +9,8 @@
 |  | 2026-09-30 | V1.0 | Qoder | 初始版本：登录安全、权限、审计、供应商、绩效等全量表结构（对应同名 DOCX，依据 TDD V1.3） |
 |  | 2026-10-10 | V1.1 | Qoder | §5 新增“在途唯一性”虚拟生成列 + 唯一键；§7 `lifecycle_request` 同法封堵；§6 绩效草稿表废弃说明；§8 动作码与 `AuditAction` 对齐（用户裁决：G1 封 40902 并发破功 / 方案 A 无草稿） |
 |  | 2026-10-10 | V1.2 | Qoder | §3 `supplier.contact_name` 由 VARCHAR(50) 扩为 VARCHAR(100)，支撑契约侧 2~64 字符名称上限（用户裁决：扩列宽）；`schema.sql` 落地归后端实现任务卡，未执行前本文档为目标态 |
+|  | 2026-10-11 | V1.3 | Qoder | 资质审核闭环与审计行级隔离所需的 DDL 增量：① §4 `supplier_qualification` 新增 `status`/`reviewed_by`/`reviewed_at`/`review_comment`（无这些列就无法承载“NORMAL 下追加待审核资质”）；② §7 `audit_log` 新增冗余列 `supplier_id` + 索引（否则“名下资产留痕”无法用单一条件实现）；③ §8 `entity_type` 新增 `SUPPLIER_QUALIFICATION`（需后端 `EntityType` 枚举同步）。均待后端任务卡执行 `schema.sql` |
+|  | 2026-10-11 | V1.4 | Qoder | §3 新增“必填分层”说明（用户裁决：应用层强校验 + 数据库兜底防呆）：明确本表「必填」列与 SRS 业务必填不同层，`type`/`contact_*`/`effective_date`/`expiry_date` 保持允许 `NULL`、不收紧，`name`/`tax_no` 的 `NOT NULL` 不动；本节无任何 DDL 变更 |
 
 ## 1. 数据库说明
 
@@ -85,6 +87,8 @@ INDEX(enabled)
 | deleted | TINYINT(1) | 是 | 0 | 逻辑删除 |
 | tax_no_active | VARCHAR(50) | 否 | 生成列 | `IF(deleted = 0, tax_no, NULL)`，仅用于承载下方唯一索引，不对业务代码暴露 |
 
+> **必填分层（裁决 20261011，与 api-spec V1.7 同步）**：本表「必填」列只描述**数据库层**约束，不等于 SRS 「核心字段规范」的业务必填。两者取不同层：SRS 列为业务必填而本表为 `NULL` 的 `type`/`contact_name`/`contact_phone`/`effective_date`/`expiry_date`，由接口层 `@NotBlank`/`@NotNull` 在 Controller 拦 `40001`，**不把列收紧为 NOT NULL**（保留存量数据兼容与灰度加字段能力）；已为 `NOT NULL` 的 `name`/`tax_no` 保持不动当兜底防呆。**本裁决不产生任何 DDL 变更**。
+
 ### status
 
 ```text
@@ -141,7 +145,11 @@ supplier.created_by → sys_user.id
 | doc_type | VARCHAR(30) | 是 | - | 文件类型 |
 | file_url | VARCHAR(500) | 是 | - | 文件地址 |
 | effective_date | DATE | 否 | NULL | 生效日期 |
-| expiry_date | DATE | 否 | NULL | 到期日期 |
+| expiry_date | DATE | 否 | NULL | 到期日期（单项证照有效期，与 §3 `supplier.expiry_date`“企业合作契约周期”同名不同义） |
+| status | VARCHAR(20) | 是 | PENDING_REVIEW | 资质版本状态：`PENDING_REVIEW` / `APPROVED` / `REJECTED`（V1.3 新增） |
+| reviewed_by | BIGINT | 否 | NULL | 审核人（AUDITOR）用户 ID（V1.3 新增） |
+| reviewed_at | DATETIME | 否 | NULL | 审核时间（V1.3 新增） |
+| review_comment | VARCHAR(500) | 否 | NULL | 审核意见，驳回时必填（V1.3 新增） |
 | created_at | DATETIME | 是 | CURRENT_TIMESTAMP | 创建时间 |
 | updated_at | DATETIME | 是 | CURRENT_TIMESTAMP | 更新时间 |
 | deleted | TINYINT(1) | 是 | 0 | 逻辑删除 |
@@ -172,10 +180,15 @@ supplier_qualification.supplier_id → supplier.id
 是否过期由：
 
 ```text
-expiry_date < 当前日期
+status = 'APPROVED' AND expiry_date < 当前日期
 ```
 
 实时计算。
+
+- **仅 `APPROVED` 参与业务判定**：合规得分 `C`、`risk_warning`、准入提交（“至少一份未过期营业执照”）均只看现行有效版本；`PENDING_REVIEW`/`REJECTED` 不参与（V1.3，裁决 20261011）。
+- **一个 `supplier_id` + `doc_type` 最多一条 `APPROVED`**：审核通过时同事务将旧版置 `REJECTED`（历史保留，不物理删），避免“同一类型两份有效资质”把合规算分变成不确定。应用层必须强约束；**MVP 不在 DB 建部分唯一索引**（与 `tax_no_active`/`active_period_key` 不同：那里需要 DB 兜并发，而此处审核动作本身由 AUDITOR 单人触发、并发改审核已经 `reviewed_at` 与乐观锁兼顾，加生成列收益低）。
+- **上传入口状态已放宽**：`DRAFT`/`RETURNED`/**`NORMAL`** 均允许 STAFF 追加资质（解除“准入后资质无法维护”死锁），新记录一律 `PENDING_REVIEW`；旧版在审核完成前保持 `APPROVED`，不出现“无有效资质”真空。
+- 逻辑删除位 `deleted` 与审核状态 `status` 是两个维度：`REJECTED` 靠 `status` 区分，不得用 `deleted = 1` 表达审核驳回（否则丢历史）。
 
 ---
 
@@ -369,6 +382,7 @@ UNIQUE KEY `uk_supplier_active_lifecycle` (`active_key`)
 | id | BIGINT | 是 | - | 主键 |
 | entity_type | VARCHAR(50) | 是 | - | 业务对象类型 |
 | entity_id | BIGINT | 是 | - | 业务对象 ID |
+| supplier_id | BIGINT | 否 | NULL | 冗余归属供应商 ID（V1.3 新增）：任何与某供应商相关的动作（包括 `PERFORMANCE_EVALUATION`/`LIFECYCLE_REQUEST`/`SUPPLIER_QUALIFICATION`）均写入该供应商主键；`SUPPLIER` 类型下与 `entity_id` 同值；`USER` 类型置 NULL。服务于审计的行级隔离，避免按 `entity_type` 分别联表 |
 | operator_id | BIGINT | 是 | - | 操作人 |
 | operator_role | VARCHAR(20) | 是 | - | 操作人角色 |
 | action | VARCHAR(50) | 是 | - | 操作类型 |
@@ -385,7 +399,10 @@ SUPPLIER
 PERFORMANCE_EVALUATION
 LIFECYCLE_REQUEST
 USER
+SUPPLIER_QUALIFICATION
 ```
+
+> `SUPPLIER_QUALIFICATION` 为 V1.3 新增（裁决 20261011 资质审核闭环），需同步后端 `audit/EntityType.java`（现仅 4 值）与 api-spec 第 5 节；对应审核动作复用现有 `AUDIT_APPROVE` / `AUDIT_REJECT` 码，不另立新码（保持 MVP 极简）。
 
 ### action
 
@@ -421,6 +438,7 @@ REJECTED
 ```text
 INDEX(entity_type, entity_id)
 INDEX(operator_id)
+INDEX(supplier_id)
 INDEX(created_at)
 ```
 
