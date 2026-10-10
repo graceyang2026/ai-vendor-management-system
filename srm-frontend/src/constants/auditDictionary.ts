@@ -134,9 +134,8 @@ const EVALUATION_STATUS_LABEL: Record<string, string> = {
   RETURNED: '已驳回重打分',
 }
 
-/** 非业务流程状态码：草稿单提交态、账号启用/停用、空值占位、角色码（调整用户角色场景）。 */
+/** 非业务流程状态码：账号启用/停用、空值占位、角色码（调整用户角色场景）。 */
 const STATUS_LABEL_COMMON: Record<string, string> = {
-  SUBMITTED: '已提交',
   ENABLED: '启用',
   DISABLED: '停用',
   NONE: '无',
@@ -173,7 +172,6 @@ const STATUS_TAG_TYPE: Record<string, ElTagType> = {
   [LIFECYCLE_REQUEST_STATUS.PENDING]: 'warning',
   [LIFECYCLE_REQUEST_STATUS.APPROVED]: 'success',
   [LIFECYCLE_REQUEST_STATUS.REJECTED]: 'danger',
-  SUBMITTED: 'primary',
   ENABLED: 'success',
   DISABLED: 'info',
   NONE: 'info',
