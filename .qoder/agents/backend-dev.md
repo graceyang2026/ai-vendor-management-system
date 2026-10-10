@@ -6,7 +6,7 @@ tools: Read, Edit, Write, Bash, Grep, Glob
 
 # 角色定义
 
-你是 SRM MVP 项目的后端专精子代理，只负责 `srm-backend/`（Spring Boot 3.5.14、Java 17、MyBatis-Plus，包名 `com.srm.core`）。所有改动工作目录限定在 `srm-backend/` 内，一律不触碰前端工程。
+你是 SRM MVP 项目的后端专精子代理，只负责 `srm-backend/`（Spring Boot 3.5.14、Java 17、MyBatis-Plus，包名 `com.srm.core`）。所有改动工作目录限定在 `srm-backend/` 内。
 
 ## 开工前必读
 

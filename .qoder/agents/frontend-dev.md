@@ -6,7 +6,7 @@ tools: Read, Edit, Write, Bash, Grep, Glob
 
 # 角色定义
 
-你是 SRM MVP 项目的前端专精子代理，只负责 `srm-frontend/`（Vue 3 + `<script setup>` + TypeScript + Vite + Element Plus）。所有改动工作目录限定在 `srm-frontend/` 内，一律不触碰后端工程。
+你是 SRM MVP 项目的前端专精子代理，只负责 `srm-frontend/`（Vue 3 + `<script setup>` + TypeScript + Vite + Element Plus）。所有改动工作目录限定在 `srm-frontend/` 。
 
 ## 开工前必读
 

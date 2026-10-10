@@ -13,7 +13,7 @@
 ### 后端 (`srm-backend/`)
 - Spring Boot 3.5.14，Java 17，Maven（`cd srm-backend && ./mvnw ...`）
 - 持久层：**MyBatis-Plus**（`com.baomidou:mybatis-plus-spring-boot3-starter`），禁止引入 Spring Data JPA / Hibernate
-  - 表结构以 `src/main/resources/schema.sql` 为唯一事实来源（MyBatis-Plus 不做自动建表），改字段先改这个文件
+  - 表结构以 `src/main/resources/schema.sql` 为唯一事实来源（MyBatis-Plus 不做自动建表）。改表结构的流程（用户裁决 2026-10-11）：先向用户说明改动内容并取得确认，确认后由 AI 直接修改该文件；未得确认不得动手。
   - 复杂查询写在 `src/main/resources/mapper/*.xml`，SQL 避免 MySQL 专有函数（如 `IFNULL` 可用但避免 `GROUP_CONCAT`/`ON DUPLICATE KEY` 等强绑定写法），保证未来可迁移到 KingbaseES
   - 乐观锁：实体字段 `@Version private Integer version;` + `MybatisPlusConfig` 中注册 `OptimisticLockerInnerInterceptor`
   - 逻辑删除：实体字段 `@TableLogic private Integer deleted;`，全局配置已在 `application.yml` 里设置
