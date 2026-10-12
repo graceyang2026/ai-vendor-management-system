@@ -22,8 +22,11 @@ import { AUDITOR_ENTITY_TYPES } from '@/types/audit-log'
  *
  * 契约缺口：后端 audit_log 对终审决策记录的是 LIFECYCLE_REQUEST（entity_id=申请单 ID），
  * 按供应商聚合追溯需后端补 supplier_id 查询参数，兜底模式下改按 entity_name 匹配以保证三类记录可见。
- * 视角范围（裁决 20261011，docs/api-spec.md §5「entity_type 参数取值规则」延伸至详情内追溯面板）：
- * 显式传业务域三实体逗号列表，后端按 IN 过滤，确保系统管理员的 USER 域日志不因 ID 撞号串入本面板。
+ * 视角范围（裁决 20261011，docs/api-spec.md §5「entity_type 参数取值规则」延伸至详情内追溯面板；
+ * 四实体口径见用户裁决 20261012 选 A）：显式传 AUDITOR_ENTITY_TYPES 四实体逗号列表，后端按 IN 过滤，
+ * 确保系统管理员的 USER 域日志不因 ID 撞号串入本面板。
+ * 效果边界如实声明（§5 同段）：SUPPLIER_QUALIFICATION 留痕的 entity_id 是资质记录 ID 而非供应商 ID，
+ * 故本面板按供应商 ID 查询时该类日志暂不命中；按供应商聚合全域留痕需后端补 supplier_id 查询参数，属后续批次。
  */
 const props = defineProps<{
   supplierId?: string | number
@@ -50,7 +53,7 @@ async function loadLogs() {
   loading.value = true
   try {
     const res = await getReviewLogListApi({
-      // 缺陷修复 20261011（决策点 1）：按 entity_id 查追溯日志必须同时传业务域三实体逗号列表
+      // 缺陷修复 20261011（决策点 1）+ 裁决 20261012 四实体：按 entity_id 查追溯日志必须同时传业务域四实体逗号列表
       // （后端 entity_type 支持逗号多值 IN），防 USER 域日志因用户 ID 与供应商 ID 数值撞号而串入审核员详情视图
       entity_type: AUDITOR_ENTITY_TYPES.join(','),
       entity_id: props.supplierId ?? props.reviewId,
@@ -94,7 +97,7 @@ onMounted(loadLogs)
       </el-table-column>
       <el-table-column label="动作类型" width="150">
         <template #default="scope">
-          <el-tag size="small" :type="getActionTagType(scope.row.action)">{{ getActionLabel(scope.row.action) }}</el-tag>
+          <el-tag size="small" :type="getActionTagType(scope.row.action)">{{ getActionLabel(scope.row.action, scope.row.entity_type) }}</el-tag>
         </template>
       </el-table-column>
       <el-table-column label="原状态" width="130">

@@ -1,6 +1,6 @@
 -- =============================================================
 -- SRM 数据库表结构（唯一事实来源）
--- 依据: docs/SRM 后端数据库表设计.md
+-- 依据: docs/api-spec.md §0「目标态 DDL 增量」裁决表（原《SRM 后端数据库表设计.md》已于 2026-10-11 从仓库删除）
 -- 说明:
 --   1. 本文件由 Spring Boot 自动执行(spring.sql.init.mode=always),
 --      因此全部 DDL 必须幂等(CREATE TABLE IF NOT EXISTS),可重复执行。
@@ -76,12 +76,26 @@ CREATE TABLE IF NOT EXISTS supplier_qualification (
     file_url       VARCHAR(500) NOT NULL                COMMENT '文件地址',
     effective_date DATE         NULL                    COMMENT '生效日期',
     expiry_date    DATE         NULL                    COMMENT '到期日期',
+    status         VARCHAR(30)  NOT NULL DEFAULT 'PENDING' COMMENT '审核状态: PENDING 待审核 / APPROVED 已生效 / REJECTED 已驳回（裁决 20261012：准入件随供应商 audit 连带批复，存续期补传件走资质审核接口）',
+    reviewed_by    BIGINT       NULL                    COMMENT '审核人 ID（仅存续期单独审核时回写；准入连带批可为 NULL，审计链在 audit_log）',
+    reviewed_at    DATETIME     NULL                    COMMENT '审核时间',
+    review_comment VARCHAR(500) NULL                    COMMENT '驳回意见/备注',
     created_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '更新时间',
     deleted        TINYINT(1)   NOT NULL DEFAULT 0      COMMENT '逻辑删除',
+    -- 同 supplier_id + 同 doc_type 仅允许一条 APPROVED 现行有效件（照抄 lifecycle_request.active_key 生成列范式）。
+    -- 应用层预检保留; 命中 DuplicateKey 折 40902。不对业务代码暴露(实体类不映射该列)。
+    approved_key   VARCHAR(64)  GENERATED ALWAYS AS (
+        CASE WHEN deleted = 0 AND status = 'APPROVED'
+             THEN CONCAT(supplier_id, '_', doc_type)
+             ELSE NULL
+        END
+    ) VIRTUAL COMMENT '同供应商同证照类型仅一条 APPROVED 现行版',
     PRIMARY KEY (id),
+    UNIQUE KEY uk_supplier_approved_doc (approved_key),
     KEY idx_supplier_id (supplier_id),
     KEY idx_supplier_doc_type (supplier_id, doc_type),
+    KEY idx_supplier_status (supplier_id, status),
     KEY idx_expiry_date (expiry_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='供应商资质表';
 
@@ -184,6 +198,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
     id            BIGINT        NOT NULL AUTO_INCREMENT COMMENT '主键',
     entity_type   VARCHAR(50)   NOT NULL                COMMENT '业务对象类型',
     entity_id     BIGINT        NOT NULL                COMMENT '业务对象 ID',
+    supplier_id   BIGINT        NULL                    COMMENT '归属供应商 ID（冗余列，裁决 20261012 DDL ②：供 §0 规则 C 行级隔离用单一条件覆盖非 SUPPLIER 实体留痕；写日志时由业务侧冗余写入，无归属时为 NULL）',
     operator_id   BIGINT        NOT NULL                COMMENT '操作人',
     operator_role VARCHAR(20)   NOT NULL                COMMENT '操作人角色',
     action        VARCHAR(50)   NOT NULL                COMMENT '操作类型',
@@ -194,6 +209,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
     created_at    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     PRIMARY KEY (id),
     KEY idx_entity_type_id (entity_type, entity_id),
+    KEY idx_supplier_id (supplier_id),
     KEY idx_operator_id (operator_id),
     KEY idx_created_at (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='审计日志表';

@@ -67,11 +67,22 @@ export interface ReviewLogQueryParams {
 }
 
 /**
- * 审核员控制台涉及的业务对象类型（准入审核=SUPPLIER，
- * 停用/恢复/淘汰终审=LIFECYCLE_REQUEST，绩效复核=PERFORMANCE_EVALUATION）。
+ * 审核员（AUDITOR）控制台涉及的业务对象类型 —— 业务域四实体，审核员日志页 entity_type 的唯一取值源：
+ * - 准入审核 = SUPPLIER
+ * - 绩效复核 = PERFORMANCE_EVALUATION
+ * - 停用/恢复/淘汰终审 = LIFECYCLE_REQUEST
+ * - 存续期资质单独审批 = SUPPLIER_QUALIFICATION（`PUT /qualifications/{id}/review` 的留痕）
+ *
+ * 口径依据：docs/api-spec.md §5「entity_type 参数取值规则」—— 用户裁决 20261012 选 A，
+ * 审核员视角由三实体扩为四实体（存续期资质单独审批的留痕须对审核员可见），旧"三实体"口径作废；
+ * USER 域（CREATE_USER / UPDATE_USER / ENABLE_USER / DISABLE_USER，按权限矩阵仅 ADMIN 触发）
+ * 始终排除在审核员视角之外，只在管理员日志页展示。
+ * 消费方一律 `AUDITOR_ENTITY_TYPES.join(',')` 拼逗号多值（后端按 IN 过滤），扩值即全局生效，
+ * 禁止在任何组件/请求封装里散点硬编码 entity_type 串值。
  */
 export const AUDITOR_ENTITY_TYPES = [
   'SUPPLIER',
   'LIFECYCLE_REQUEST',
   'PERFORMANCE_EVALUATION',
+  'SUPPLIER_QUALIFICATION',
 ] as const satisfies readonly EntityTypeCode[]

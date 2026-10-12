@@ -266,7 +266,7 @@ onMounted(loadLogs)
       </el-table-column>
       <el-table-column label="操作类型" width="140">
         <template #default="scope">
-          <el-tag size="small" :type="getActionTagType(scope.row.action)">{{ getActionLabel(scope.row.action) }}</el-tag>
+          <el-tag size="small" :type="getActionTagType(scope.row.action)">{{ getActionLabel(scope.row.action, scope.row.entity_type) }}</el-tag>
         </template>
       </el-table-column>
       <el-table-column label="目标账号/对象" width="170">

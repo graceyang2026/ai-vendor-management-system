@@ -44,11 +44,15 @@ class AuditLogResponseJsonTest {
 
     @Test
     void auditEnumsCoverContractValues() {
-        // 契约源：docs/SRM 后端数据库表设计.md §8 entity_type（4 个值）。
-        // 裁决 20261010（§6）：一步式评价不设草稿，PERFORMANCE_EVALUATION_DRAFT 已从契约中移除。
+        // 契约源：docs/api-spec.md §0「目标态 DDL 增量」③ + 第 5 节 entity_type（现 5 个值）。
+        // 裁决 20261010（api-spec §4.1）：一步式评价不设草稿，PERFORMANCE_EVALUATION_DRAFT 已移除。
+        // 裁决 20261012（api-spec §0③）：增 SUPPLIER_QUALIFICATION，排在既有四值之后。
         assertThat(EntityType.values()).extracting(Enum::name).containsExactly(
-                "SUPPLIER", "PERFORMANCE_EVALUATION", "LIFECYCLE_REQUEST", "USER");
-        assertThat(EntityType.values()).hasSize(4);
+                "SUPPLIER", "PERFORMANCE_EVALUATION", "LIFECYCLE_REQUEST", "USER",
+                "SUPPLIER_QUALIFICATION");
+        assertThat(EntityType.values()).hasSize(5);
+        // 新增值的 name() 就是落库/过滤用的 wire 值，必须与契约字符串逐字一致（大小写敏感）
+        assertThat(EntityType.valueOf("SUPPLIER_QUALIFICATION").name()).isEqualTo("SUPPLIER_QUALIFICATION");
         assertThat(AuditResult.values()).extracting(Enum::name).containsExactly("SUCCESS", "REJECTED");
         assertThat(AuditAction.values()).extracting(Enum::name).containsExactly(
                 "SUBMIT", "AUDIT_APPROVE", "AUDIT_REJECT", "REVIEW_APPROVE", "REVIEW_REJECT",

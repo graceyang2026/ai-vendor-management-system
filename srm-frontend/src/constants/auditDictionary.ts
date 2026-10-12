@@ -1,5 +1,5 @@
 /**
- * 审计日志后端枚举字典（唯一依据：srm-backend 源码 + docs/api-spec.md 第 5 节 + 数据库表设计第 8 节）。
+ * 审计日志后端枚举字典（唯一依据：srm-backend 枚举源码 + docs/api-spec.md 第 0 节「目标态 DDL 增量」③/第 5 节）。
  *
  * 分层原则：
  * - 【码值】本文件 XXX 常量对象 = 后端枚举 name()，是与 API 交互的唯一合法取值，禁止中文；
@@ -7,12 +7,18 @@
  * - 【颜色】*_TAG_TYPE 供 el-tag 渲染。
  *
  * 后端来源：
- * - EntityType.java（SUPPLIER / PERFORMANCE_EVALUATION / LIFECYCLE_REQUEST / USER）
- *   权威源：docs/SRM 后端数据库表设计.md 第 8 节 entity_type + docs/api-spec.md 第 5 节。
- *   绩效评价的草稿对象类型已随一步式提交契约删除（表设计第 6 节裁决 20261010），
+ * - EntityType.java（五值：SUPPLIER / PERFORMANCE_EVALUATION / LIFECYCLE_REQUEST / USER / SUPPLIER_QUALIFICATION）
+ *   权威源：docs/api-spec.md 第 5 节 entity_type 取值 + 第 0 节「目标态 DDL 增量」③
+ *   （SUPPLIER_QUALIFICATION 为用户裁决 20261012 批准的资质审核闭环新增项：仅存续期单独审批的资质
+ *   审核动作以它为审计对象，准入期连带批复的留痕仍归 SUPPLIER 域；后端 EntityType.java 增项归 backend-dev 任务卡）
+ *   注：《SRM 后端数据库表设计》md/docx 已于 20261011 从仓库删除，实体口径只认 api-spec 与后端枚举源码。
+ *   绩效评价的草稿对象类型已随一步式提交契约删除（api-spec 第 4 节，裁决 20261010），
  *   后端 EntityType.java 残留枚举值归后端清理任务卡，前端不再映射。
  * - AuditAction.java（11 个动作码 = 业务域 SUBMIT / AUDIT_* / REVIEW_* / DECISION_* 七码
  *   + 用户域 CREATE_USER/UPDATE_USER/ENABLE_USER/DISABLE_USER 四码，entity_type=USER，仅 ADMIN 触发）
+ *   方案甲裁决 20261012：码值零新增，REVIEW_* 一码两域 —— 绩效复核与存续期资质单独审批共用，
+ *   靠 entity_type 区分消费域，展示文案按域分流（见下方 QUALIFICATION_ACTION_LABEL_CN，
+ *   权威源：api-spec §2 接口 #10「审计留痕」句 + §5 AuditLogResponse.action 注释「消费域」句）
  * - AuditResult.java（SUCCESS / REJECTED）
  * - UserServiceImpl.java（用户域 old_status / new_status 落 enabled 的标准布尔字符串
  *   "true"/"false"，见 docs/用户管理接口规格增补稿.md §3.5 约定：CREATE_USER 时 old 为空、
@@ -26,6 +32,8 @@ export const ENTITY_TYPE = {
   PERFORMANCE_EVALUATION: 'PERFORMANCE_EVALUATION',
   LIFECYCLE_REQUEST: 'LIFECYCLE_REQUEST',
   USER: 'USER',
+  // 存续期补传资质的单独审批留痕（裁决 20261012；后端 EntityType.java 增项由 backend-dev 落地）
+  SUPPLIER_QUALIFICATION: 'SUPPLIER_QUALIFICATION',
 } as const
 export type EntityTypeCode = (typeof ENTITY_TYPE)[keyof typeof ENTITY_TYPE]
 
@@ -92,11 +100,14 @@ export const ENTITY_TYPE_LABEL_CN: Record<EntityTypeCode, string> = {
   [ENTITY_TYPE.PERFORMANCE_EVALUATION]: '绩效评价单',
   [ENTITY_TYPE.LIFECYCLE_REQUEST]: '生命周期申请',
   [ENTITY_TYPE.USER]: '用户账号',
+  [ENTITY_TYPE.SUPPLIER_QUALIFICATION]: '供应商资质',
 }
 
 /**
  * 动作中文（后端 AuditAction 全 11 码的唯一文案权威源，管理日志页亦走本表）。
  * UPDATE_USER 覆盖"资料修改 + 角色调整"两类变动（后端不单列角色动作码，明细写 comment）。
+ * 注意：REVIEW_* 为一码两域共用码（方案甲裁决 20261012），本表按绩效域口径出文案，
+ * 资质域显示文案由 QUALIFICATION_ACTION_LABEL_CN 分流覆盖，由 getActionLabel(code, entity_type) 选表。
  */
 export const ACTION_LABEL_CN: Record<AuditActionCode, string> = {
   [AUDIT_ACTION.SUBMIT]: '提交送审',
@@ -113,6 +124,18 @@ export const ACTION_LABEL_CN: Record<AuditActionCode, string> = {
   [AUDIT_ACTION.DISABLE_USER]: '停用账号',
 }
 
+/**
+ * 资质域（entity_type=SUPPLIER_QUALIFICATION）动作文案分流表。
+ * 权威源：docs/api-spec.md §2 接口 #10「审计留痕」句 + §5 AuditLogResponse.action 注释「消费域」句
+ * （方案甲裁决 20261012：REVIEW_* 码值零新增，绩效复核与存续期资质单独审批共用，靠 entity_type 区分域，
+ * 资质域不得照搬「绩效复核」文案）。
+ * 只列与绩效域语义不同的码；其余码（如 SUBMIT）回退主表 ACTION_LABEL_CN。
+ */
+export const QUALIFICATION_ACTION_LABEL_CN: Partial<Record<AuditActionCode, string>> = {
+  [AUDIT_ACTION.REVIEW_APPROVE]: '资质审核通过',
+  [AUDIT_ACTION.REVIEW_REJECT]: '资质审核驳回',
+}
+
 export const RESULT_LABEL_CN: Record<AuditResultCode, string> = {
   [AUDIT_RESULT.SUCCESS]: '成功',
   [AUDIT_RESULT.REJECTED]: '被驳回',
@@ -126,8 +149,8 @@ export const ROLE_LABEL_CN: Record<string, string> = {
 }
 
 /**
- * old_status / new_status 中文文案：三套状态枚举存在同码值不同语义
- * （APPROVED 在生命周期域是"已批准"、在绩效域是"已复核通过"），
+ * old_status / new_status 中文文案：多套状态枚举存在同码值不同语义
+ * （APPROVED 在生命周期域是"已批准"、在绩效域是"已复核通过"、在资质域是"已生效"），
  * 故按域拆表，由 getStatusLabel(code, entity_type) 依据 entity_type 选口径，供应商域为主兜底。
  */
 const SUPPLIER_STATUS_LABEL: Record<SupplierStatusCode, string> = {
@@ -150,6 +173,18 @@ const EVALUATION_STATUS_LABEL: Record<string, string> = {
   PENDING_REVIEW: '待复核',
   APPROVED: '已复核通过',
   RETURNED: '已驳回重打分',
+}
+
+/**
+ * 资质域状态文案（契约口径：api-spec QualificationResponse，裁决 20261012 定码：
+ * PENDING 待审核 / APPROVED 已生效 / REJECTED 已驳回）。
+ * PENDING/APPROVED/REJECTED 与生命周期域同码不同义，按 entity_type 分流取本表，
+ * 避免落入兜底链显示生命周期文案（待终审/已批准）。
+ */
+const QUALIFICATION_STATUS_LABEL: Record<string, string> = {
+  PENDING: '资质待审',
+  APPROVED: '已生效',
+  REJECTED: '已驳回',
 }
 
 /**
@@ -190,7 +225,8 @@ const ACTION_TAG_TYPE: Record<AuditActionCode, ElTagType> = {
 /**
  * 状态色映射（沿用原型语义，键换成后端枚举码）：
  * 草稿/停用→info、待审核→warning、正常合作→success、待修改/淘汰→danger。
- * 跨域同码值（APPROVED/RETURNED/PENDING_REVIEW）颜色语义一致，故合并为一张表。
+ * 跨域同码值（APPROVED/RETURNED/PENDING_REVIEW/PENDING/REJECTED）颜色语义一致（含资质域
+ * PENDING→warning/APPROVED→success/REJECTED→danger），故合并为一张表，无需按 entity_type 分流颜色。
  * 账号启停（含后端布尔原值 'true'/'false' 与前端派生码 ENABLED/DISABLED）：启用 success、停用 info。
  */
 const STATUS_TAG_TYPE: Record<string, ElTagType> = {
@@ -217,9 +253,22 @@ export function getEntityTypeLabel(code?: string | null): string {
   return ENTITY_TYPE_LABEL_CN[code as EntityTypeCode] ?? code
 }
 
-/** 动作中文：已知码走字典；未知码原样回显（便于后端新增码时前端不崩）。 */
-export function getActionLabel(code?: string | null): string {
+/**
+ * 动作中文：已知码走字典；未知码原样回显（便于后端新增码时前端不崩）。
+ * 方案甲裁决 20261012：REVIEW_* 一码两域（PERFORMANCE_EVALUATION 与 SUPPLIER_QUALIFICATION 共用），
+ * 调用方手头有 entity_type 字段时务必传入 —— entity_type=SUPPLIER_QUALIFICATION 走
+ * QUALIFICATION_ACTION_LABEL_CN 显示「资质审核通过/驳回」，其余域维持「绩效复核通过/驳回」等既有文案。
+ * 本函数只做展示映射，不改变任何请求传参。
+ */
+export function getActionLabel(code?: string | null, entityType?: string | null): string {
   if (!code) return '-'
+  if (entityType === ENTITY_TYPE.SUPPLIER_QUALIFICATION) {
+    return (
+      QUALIFICATION_ACTION_LABEL_CN[code as AuditActionCode] ??
+      ACTION_LABEL_CN[code as AuditActionCode] ??
+      code
+    )
+  }
   return ACTION_LABEL_CN[code as AuditActionCode] ?? code
 }
 
@@ -229,9 +278,10 @@ export function getActionTagType(code?: string | null): ElTagType {
 }
 
 /**
- * 状态中文：按 entity_type 选域口径（生命周期申请/绩效评价单的码值与供应商域重名但语义不同），
+ * 状态中文：按 entity_type 选域口径（生命周期申请/绩效评价单/供应商资质的码值与供应商域重名但语义不同），
  * 未传 entity_type 时按 供应商域 → 生命周期 → 绩效 → 共用表 顺序兜底，最终原样回显未知码。
  * 用户域（entity_type=USER）走兜底链落到共用表，故后端布尔原值 'true'/'false' 在此译为 启用/停用。
+ * 资质域（SUPPLIER_QUALIFICATION）按 QUALIFICATION_STATUS_LABEL 口径：资质待审/已生效/已驳回（裁决 20261012）。
  */
 export function getStatusLabel(code?: string | null, entityType?: string | null): string {
   if (!code) return '-'
@@ -242,6 +292,9 @@ export function getStatusLabel(code?: string | null, entityType?: string | null)
     return (
       EVALUATION_STATUS_LABEL[code] ?? SUPPLIER_STATUS_LABEL[code as SupplierStatusCode] ?? STATUS_LABEL_COMMON[code] ?? code
     )
+  }
+  if (entityType === ENTITY_TYPE.SUPPLIER_QUALIFICATION) {
+    return QUALIFICATION_STATUS_LABEL[code] ?? STATUS_LABEL_COMMON[code] ?? code
   }
   return (
     SUPPLIER_STATUS_LABEL[code as SupplierStatusCode] ??

@@ -21,8 +21,10 @@ import { AUDITOR_ENTITY_TYPES } from '@/types/audit-log'
  * 全量操作与审批日志（审核员 AUDITOR 维度视角，系统全量合规审计与过程日志/审计追踪）。
  * 契约红线：action / entity_type / old_status / new_status 一律使用后端枚举码（见 auditDictionary），
  * 中文仅在展示层映射；后端未就绪或扩展筛选参数不生效时落入原型示例数据兜底。
- * 视角范围（缺陷修复 20261011，docs/api-spec.md §5）：显式传业务域三实体逗号列表，
- * 后端按 IN 过滤，确保系统管理员的 USER 域操作日志不出现在审核员页面。
+ * 视角范围（docs/api-spec.md §5「entity_type 参数取值规则」）：显式传业务域四实体逗号列表
+ * （AUDITOR_ENTITY_TYPES：SUPPLIER / PERFORMANCE_EVALUATION / LIFECYCLE_REQUEST / SUPPLIER_QUALIFICATION，
+ * 末项为用户裁决 20261012 选 A 新增，使存续期资质审批留痕对审核员可见），后端按 IN 过滤，
+ * 确保系统管理员的 USER 域操作日志不出现在审核员页面。
  */
 
 const loading = ref(false)
@@ -60,7 +62,7 @@ async function loadLogs() {
   loading.value = true
   try {
     const res = await getReviewLogListApi({
-      // 审核员页只取业务域三实体（后端 entity_type 支持逗号多值 IN），排除 ADMIN 的 USER 域日志
+      // 审核员页只取业务域四实体常量（后端 entity_type 支持逗号多值 IN），排除 ADMIN 的 USER 域日志
       entity_type: AUDITOR_ENTITY_TYPES.join(','),
       entity_name: filters.entityName || undefined,
       action: filters.action || undefined,
@@ -163,7 +165,7 @@ onMounted(loadLogs)
       </el-table-column>
       <el-table-column label="动作类型" width="150">
         <template #default="scope">
-          <el-tag size="small" :type="getActionTagType(scope.row.action)">{{ getActionLabel(scope.row.action) }}</el-tag>
+          <el-tag size="small" :type="getActionTagType(scope.row.action)">{{ getActionLabel(scope.row.action, scope.row.entity_type) }}</el-tag>
         </template>
       </el-table-column>
       <el-table-column label="原状态" width="130">
