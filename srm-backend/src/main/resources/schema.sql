@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS supplier_qualification (
     reviewed_by    BIGINT       NULL                    COMMENT '审核人 ID（仅存续期单独审核时回写；准入连带批可为 NULL，审计链在 audit_log）',
     reviewed_at    DATETIME     NULL                    COMMENT '审核时间',
     review_comment VARCHAR(500) NULL                    COMMENT '驳回意见/备注',
+    version        INT          NOT NULL DEFAULT 1      COMMENT '乐观锁版本（DDL④ 裁决 20261012：#11 存续期资质单独审核并发安全；与 supplier/lifecycle_request 同口径 DEFAULT 1，用户意图"实体设计风格 100% 一致"）',
     created_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '更新时间',
     deleted        TINYINT(1)   NOT NULL DEFAULT 0      COMMENT '逻辑删除',

@@ -31,7 +31,7 @@ interface PageResult<T> {
 ```
 
 - **时间格式**：ISO-8601，如 `2026-09-28T10:00:00`。
-- **乐观锁**：所有会被并发审核的资源（`Supplier`、`PerformanceEvaluation`）响应体都带 `version` 字段；写操作（如审核决策）必须在请求体里回传 `version`，后端用它做 MyBatis-Plus 乐观锁校验，版本不匹配返回 `40901`。
+- **乐观锁**：所有会被并发审核的资源（全量四实体，裁决 20261013：`Supplier`、`PerformanceEvaluation`、`SupplierQualification`、`LifecycleRequest`）响应体都带 `version` 字段；写操作（如审核决策）必须在请求体里回传 `version`，后端用它做 MyBatis-Plus 乐观锁校验，版本不匹配返回 `40901`。
 - **角色枚举** `Role`: `ADMIN` | `STAFF` | `AUDITOR`
 - **数据可见性分层隔离（裁决 20261011，彻底取代旧文“后端不做行级隔离、前端按业务范围内过滤”）**：`GET /suppliers`、`GET /suppliers/{id}`、`GET /suppliers/{id}/qualifications`、`GET /audit-logs` 均由**后端强制隔离**，禁止依赖前端过滤（与本文 §0“前端隐藏不是安全边界”口径一致）：
   - **规则 A｜私有在途区**：`status IN ('DRAFT','RETURNED')` 的供应商档案，后端强制附加 `created_by = 当前用户`；其他人既查不到也改不了（列表直接过滤掉，详情越权访问返回 `40302`）。
@@ -47,7 +47,8 @@ interface PageResult<T> {
 |---|---|---|---|---|
 | ① | `supplier_qualification` | **已落地（20261012 用户确认后由 tech-lead 直改 `schema.sql`）**：新增 `status VARCHAR(30) NOT NULL DEFAULT 'PENDING'`、`reviewed_by BIGINT NULL`、`reviewed_at DATETIME NULL`、`review_comment VARCHAR(500) NULL` + 生成列 `approved_key` + `UNIQUE KEY uk_supplier_approved_doc`（同供应商同证照仅一条 APPROVED 现行版）+ `idx_supplier_status` | — | 资质审核模型（裁决 20261012）：准入件随供应商 audit 连带批复；`NORMAL` 存续期补传件单独审批；旧 APPROVED 保持生效位无真空 |
 | ② | `audit_log` | **已落地（20261012 用户确认后由 tech-lead 直改 `schema.sql`）**：新增 `supplier_id BIGINT NULL` + `KEY idx_supplier_id`；写日志时冗余写入归属供应商 ID（业务代码写入点随“供应商业务代码批次”补齐） | — | 规则 C 审计行级隔离：`supplier_id IN (本人创建供应商)` 需用单一条件覆盖非 `SUPPLIER` 实体留痕 |
-| ③ | `EntityType` 枚举（`audit/EntityType.java`） | 仅 `SUPPLIER`/`PERFORMANCE_EVALUATION`/`LIFECYCLE_REQUEST`/`USER` 四值 | 增 `SUPPLIER_QUALIFICATION`（**用户裁决 20261012 批准**，归 backend-dev 任务卡） | 仅**存续期单独审批**的资质审核动作以 `SUPPLIER_QUALIFICATION` 为审计对象（`PUT /qualifications/{id}/review`）；**准入期连带批复的留痕直接归 `SUPPLIER` 域**（随 audit 一笔），无需单独枚举实体 |
+| ③ | `EntityType` 枚举（`audit/EntityType.java`） | **已落地（实测）**：枚举现为 5 值，已含 `SUPPLIER_QUALIFICATION`（本文旧版「仅四值」的陈述已过期） | — | 仅**存续期单独审批**的资质审核动作以 `SUPPLIER_QUALIFICATION` 为审计对象（`PUT /qualifications/{id}/review`）；**准入期连带批复的留痕直接归 `SUPPLIER` 域**（随 audit 一笔），无需单独枚举实体 |
+| ④ | `lifecycle_request.version` | ⚠️ **实测无此列**（`schema.sql` L165-193 建表段无 `version`；HEAD 提交版本同样没有——属**从未落地**而非重写遗失）。与本文§0「乐观锁全量四实体」铁律相左：`LifecycleRequest` 被列为四实体之一，#17 `LifecycleDecisionRequest.version` 也以其为唯一取值源，因此 **40901 当前无落库基础**（与 DDL④ 同期落地的 `supplier`/`supplier_qualification`/`performance_evaluation` 三表均已有列，唯此表缺失） | 新增 `version INT NOT NULL DEFAULT 1`（与同族三表口径一致）；建 `LifecycleRequest` 实体时挂 `@Version`；`LifecycleRequestResponse.version` 由此列供值 | §0 乐观锁四实体铁律 + 裁决 20261013 候选 A；归 backend-dev「供应商业务代码批次」任务卡（与 #16/#17 同批，需先行落地否则决策步无法实现） |
 
   已落地的同类范式（无需新增，实现 ①② 时照抄写法即可）：`performance_evaluation.active_period_key` + `uk_supplier_active_period`、`lifecycle_request.active_key` + `uk_supplier_active_lifecycle` 都是“逻辑删除友好的虚拟生成列 + 部分唯一索引”；若需强约束“同一类型仅一条 `APPROVED`”，同法用生成列实现，不引入触发器。
 
@@ -142,6 +143,15 @@ interface SupplierCreateRequest {
   expiry_date: string;
 }
 type SupplierUpdateRequest = Partial<SupplierCreateRequest>;
+
+/**
+ * #6 `POST /suppliers/{id}/submit` 请求体（裁决 20261013 候选 B）：
+ * 状态迁移操作（`DRAFT`/`RETURNED` → `PENDING_REVIEW`）统一纳入乐观锁并发控制范畴，
+ * 避免企业级多端操作场景下的脏写与状态机冲突（本接口原口径为“无 body”，已据裁决修正）。
+ */
+interface SupplierSubmitRequest {
+  version: number;   // 必带；取 SupplierResponse.version（DB 列 supplier.version）；不匹配返回 40901
+}
 ```
 
 **校验规则**（裁决 20261010，口径来自需求规格说明书 V1.6「数据校验机制」；**后端 Bean Validation（`@NotBlank`/`@Pattern`）与前端表单正则必须逐字同源**，不得两侧各写一套）：
@@ -176,11 +186,11 @@ type SupplierUpdateRequest = Partial<SupplierCreateRequest>;
 | GET | `/suppliers` | ALL（**按 §0 隔离规则**） | query: `status?`, `keyword?`, `page`, `page_size`；STAFF 结果集 = 公有资产区 + 本人草稿/退回；AUDITOR/ADMIN 为全量 |
 | GET | `/suppliers/{id}` | ALL（**按 §0 隔离规则**） | 详情，含最近一次归档绩效评级；命中规则 A 但非本人 → `40302` |
 | DELETE | `/suppliers/{id}` | STAFF（本人） | 仅本人 `DRAFT` 逻辑删除，其余状态 `40302` |
-| POST | `/suppliers/{id}/submit` | STAFF（本人） | `DRAFT`/`RETURNED` → `PENDING_REVIEW`；要求已上传至少一份未过期营业执照资质，否则 `40001` |
+| POST | `/suppliers/{id}/submit` | STAFF（本人） | `DRAFT`/`RETURNED` → `PENDING_REVIEW`；要求已上传至少一份未过期营业执照资质，否则 `40001`。请求体 `SupplierSubmitRequest`（裁决 20261013 候选 B：**仅 `version` 一字段**，取 `SupplierResponse.version`），缺失或版本不匹配返回 `40901`（§0 乐观锁全量四实体口径延伸至状态迁移） |
 | POST | `/suppliers/{id}/audit` | AUDITOR | 审核决策，见下 |
 | POST | `/suppliers/{id}/qualifications` | STAFF（本人） | 上传资质，允许状态 `DRAFT`/`RETURNED`/`NORMAL`（裁决 20261011：解除“准入后资质无法维护”死锁）；无论建档随件还是存续期补传，新记录初始状态一律 `status=PENDING`（码值裁决 20261012：PENDING/APPROVED/REJECTED 三态），**不直接生效** |
 | GET | `/suppliers/{id}/qualifications` | ALL（**按 §0 隔离规则**） | 资质列表；默认仅返回 `APPROVED`（现行有效）与 `PENDING`（待审核）记录，`REJECTED` 仅供本人追溯 |
-| PUT | `/qualifications/{id}/review` | AUDITOR | **范围限定（裁决 20261012）：仅服务于 `NORMAL` 存续期补传件的单独审批**；准入期资质不调用本接口，跟随 `POST /suppliers/{id}/audit` 整体批复。`APPROVE` → 新资质置 `APPROVED`，同 `supplier_id`+`doc_type` 的旧资质自动退位（历史保留不物理删）；`REJECT` → 新资质置 `REJECTED`，**旧资质保持生效位**，供应商 `NORMAL` 基础合作状态不受影响；审核动作回写 `reviewed_by`/`reviewed_at`/`review_comment`。**审计留痕（方案甲裁决 20261012，用户拍板零新增码）**：`action` 复用现有 `REVIEW_APPROVE`/`REVIEW_REJECT` 码（不新造 `REVIEW_QUALIFICATION`），靠 `entity_type=SUPPLIER_QUALIFICATION` 区分域，`entity_id`=资质记录 ID，并冗余写入 `supplier_id`；准入期连带批复不单独落资质留痕（归 `SUPPLIER` 域随 audit 一笔，口径不变） |
+| PUT | `/qualifications/{id}/review` | AUDITOR | **范围限定（裁决 20261012）：仅服务于 `NORMAL` 存续期补传件的单独审批**；准入期资质不调用本接口，跟随 `POST /suppliers/{id}/audit` 整体批复。`APPROVE` → 新资质置 `APPROVED`，同 `supplier_id`+`doc_type` 的旧资质自动退位（历史保留不物理删）；`REJECT` → 新资质置 `REJECTED`，**旧资质保持生效位**，供应商 `NORMAL` 基础合作状态不受影响；审核动作回写 `reviewed_by`/`reviewed_at`/`review_comment`（请求体三字段 `action`/`review_comment`/`version` 见下方专节，口径照 #7 同款，用户裁决 20261012）。**审计留痕（方案甲裁决 20261012，用户拍板零新增码）**：`action` 复用现有 `REVIEW_APPROVE`/`REVIEW_REJECT` 码（不新造 `REVIEW_QUALIFICATION`），靠 `entity_type=SUPPLIER_QUALIFICATION` 区分域，`entity_id`=资质记录 ID，并冗余写入 `supplier_id`；准入期连带批复不单独落资质留痕（归 `SUPPLIER` 域随 audit 一笔，口径不变） |
 
 ### `POST /suppliers/{id}/audit`
 
@@ -197,6 +207,24 @@ interface SupplierAuditDecisionRequest {
 - 全量写 `AuditLog`（留痕码值按方案甲裁决 20261012：`action=AUDIT_APPROVE`/`AUDIT_REJECT`、`entity_type=SUPPLIER`、连带批复不另落 `SUPPLIER_QUALIFICATION` 第二笔，资质归属写 `supplier_id` 冗余列）；`version` 不匹配返回 `40901`（说明期间被并发修改，前端需重新拉取详情）。
 
 Response `data`: `SupplierResponse`
+
+### `PUT /qualifications/{id}/review`
+
+Request（字段名由用户裁决 2026-10-12 定稿：照 #7 同款口径，三字段 `action` / `review_comment` / `version`）：
+```ts
+interface QualificationReviewRequest {
+  action: 'APPROVE' | 'REJECT';   // 裁决动作
+  review_comment?: string;        // action=REJECT 时必填；回写 supplier_qualification.review_comment
+  version: number;                // 乐观锁必带（对齐 §0 铁律）；取 GET 资质列表返回的 QualificationResponse.version（DB 列 supplier_qualification.version，DDL④ 已落）；不匹配返回 40901，前端需重新拉取资质列表
+}
+```
+- `APPROVE`：该资质 `PENDING → APPROVED`，同 `supplier_id`+`doc_type` 旧 `APPROVED` 件自动退位（历史保留不物理删）；并发置生效位竞态由 DB 生成列 `uk_supplier_approved_doc` 兜底，命中 `DuplicateKey` 返回 `40902`。
+- `REJECT`：`PENDING → REJECTED`，`review_comment` 必填；**旧件保持生效位**，供应商 `NORMAL` 基础合作状态不受影响。
+- 两分支均回写 `reviewed_by`（=当前 AUDITOR）/`reviewed_at`。
+- 审计留痕（方案甲裁决 20261012）：`action=REVIEW_APPROVE`/`REVIEW_REJECT`、`entity_type=SUPPLIER_QUALIFICATION`、`entity_id`=资质记录 ID、冗余写 `supplier_id`。**术语区分**：本接口请求体的 `action` 是入参（APPROVE/REJECT 二值），与审计日志记录字段 `action` 的 `REVIEW_*` 码是两个层，后端落审计时加 `REVIEW_` 前缀映射，不得把裸 `APPROVE` 写入审计表。
+- 前置拒绝返回 `40302`：资质所属供应商非 `NORMAL`（准入期件不走本接口，跟随 #7 连带批复）、或资质当前非 `PENDING`（已批/已驳不可重复审）。
+
+Response `data`: `QualificationResponse`
 
 ### 文件上传
 
@@ -230,6 +258,7 @@ interface QualificationResponse {
   effective_date: string;       // 单项证照有效期（与 supplier 表同名字段不同义，见下方说明）
   expiry_date: string;
   status: 'PENDING' | 'APPROVED' | 'REJECTED';   // 裁决 20261012 定码：PENDING 待审核 / APPROVED 已生效 / REJECTED 已驳回
+  version: number;                // 乐观锁版本（DDL④ 裁决 20261012：DEFAULT 1 与 supplier/lifecycle_request 同口径；#11 审核请求体的 version 即回传本字段，不匹配 40901）
   expired: boolean;             // 由 expiry_date < 今天 计算得出；仅对 status=APPROVED 参与合规算分
   created_at: string;
   reviewed_by?: number;         // 新增：审核人
@@ -275,6 +304,7 @@ interface LifecycleRequestResponse {
   decided_by_name?: string;
   decided_at?: string;
   decision_comment?: string;
+  version: number;                // 裁决 20261013 候选 A（与 DDL④ 同思路）：DB 列 `lifecycle_request.version`（DEFAULT 1）早已存在，且 `POST /lifecycle-requests/{id}/decision` 入参强依赖它——不输出则前端无合规取值链。本字段即 #14 `LifecycleDecisionRequest.version` 的唯一取值源（取 #13 申请历史列表返回值）
 }
 interface LifecycleRequestCreateRequest {
   type: LifecycleRequestType;
@@ -291,7 +321,7 @@ interface LifecycleDecisionRequest {
 |---|---|---|---|
 | POST | `/suppliers/{id}/lifecycle-requests` | STAFF | `type=SUSPEND` 仅当供应商当前为 `NORMAL`；`type=RESUME` 仅当当前为 `SUSPENDED`；`type=ELIMINATE` 仅当当前为 `NORMAL` 或 `SUSPENDED`；同一供应商同一类型已有 `PENDING` 申请时返回 `40902` |
 | GET | `/suppliers/{id}/lifecycle-requests` | ALL | 申请历史 |
-| POST | `/lifecycle-requests/{id}/decision` | AUDITOR | `APPROVE` 且 `type=SUSPEND` → 供应商置 `SUSPENDED`；`APPROVE` 且 `type=RESUME` → 供应商置 `NORMAL`；`APPROVE` 且 `type=ELIMINATE` → 供应商置 `ELIMINATED`（终态，之后不可再对该供应商创建任何生命周期申请）；`REJECT` 只改申请状态，供应商状态不变。全量写 `AuditLog` |
+| POST | `/lifecycle-requests/{id}/decision` | AUDITOR | `APPROVE` 且 `type=SUSPEND` → 供应商置 `SUSPENDED`；`APPROVE` 且 `type=RESUME` → 供应商置 `NORMAL`；`APPROVE` 且 `type=ELIMINATE` → 供应商置 `ELIMINATED`（终态，之后不可再对该供应商创建任何生命周期申请）；`REJECT` 只改申请状态，供应商状态不变。入参 `version` 取 #13 GET 申请历史返回的 `LifecycleRequestResponse.version`（裁决 20261013 已补齐该出参，取值链闭合），不匹配 `40901`。全量写 `AuditLog` |
 
 ---
 
@@ -353,6 +383,7 @@ interface PerformanceEvaluationResponse {
   supplier_id: number;
   period_start: string;
   period_end: string;
+  mode: 'manual' | 'mock';        // 裁决 20261013 方案 a：出参回显取数模式（DB 列 mode DEFAULT 'manual'），供列表/详情区分真实录入与演示生成，审计可追溯；前端只读，任何写接口不接受本字段
   fact_record: PerformanceFactRecord;
   result: PerformanceEvaluationResult;
   status: EvaluationStatus;
@@ -419,6 +450,7 @@ interface PerformanceReviewDecisionRequest {
 ```
 - `APPROVE`：`status → APPROVED`，即**归档态**——同一张 `performance_evaluation` 表内的永久记录，**无独立历史表**（`schema.sql` 中无此类表，且不得新增）；之后不可再编辑；供应商 `latest_performance_grade`/`risk_warning` 同步更新。
 - `REJECT`：`status → RETURNED`，原 STAFF 可通过 `PUT /performance/evaluations/{id}` 改事实重提（沿用同一条记录，不新建，保持"一个考核周期一张单"的约束）。
+- 非法状态复核（评价单已归档 `APPROVED`、不存在或已被并发复审）返回 `40302`（裁决 20261013 显式化，口径对齐 #7 audit/#11 review，底层为 §0 `RoleGuard.requireStatusAllowed`）；`version` 不匹配返回 `40901`。
 
 ---
 

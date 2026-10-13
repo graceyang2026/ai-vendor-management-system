@@ -122,10 +122,10 @@
 
 - **Given** 一家 `NORMAL` 供应商，营业执照已过期（因此 `C=0`、`risk_warning=true`）
 - **When** 本人 STAFF 调 `POST /suppliers/{id}/qualifications` 上传新营业执照
-- **Then** 返回成功；新记录 `status=PENDING_REVIEW`；**旧记录仍为 `APPROVED`**（现行有效位不变）；`risk_warning` **仍为 `true`**、`C` **仍为 0**——绝不能因为“待审核”就提前解除预警（否则伪造了一个尚未被审核的合规状态）
+- **Then** 返回成功；新记录 `status=PENDING`（裁决 20261012 定码：资质三态 `PENDING`/`APPROVED`/`REJECTED`，与供应商/绩效的 `PENDING_REVIEW` 不同族，本文旧版写 `PENDING_REVIEW` 属码值混用，已按 `schema.sql` DEFAULT 与 api-spec §2 更正）；**旧记录仍为 `APPROVED`**（现行有效位不变）；`risk_warning` **仍为 `true`**、`C` **仍为 0**——绝不能因为“待审核”就提前解除预警（否则伪造了一个尚未被审核的合规状态）
 - **Given** 上述待审核资质
 - **When** AUDITOR 调 `POST /qualifications/{id}/review`，`decision=APPROVE`
-- **Then** 新资质置 `APPROVED`，同 `supplier_id`+`doc_type` 的旧资质自动置 `REJECTED`（数据库记录仍在，不物理删）→ `risk_warning` 自动置 `false`，后续评价的合规维度 `C` 恢复 100；写入 `AuditLog`（`entity_type=SUPPLIER_QUALIFICATION`，`action=AUDIT_APPROVE`）
+- **Then** 新资质置 `APPROVED`，同 `supplier_id`+`doc_type` 的旧资质自动置 `REJECTED`（数据库记录仍在，不物理删）→ `risk_warning` 自动置 `false`，后续评价的合规维度 `C` 恢复 100；写入 `AuditLog`（`entity_type=SUPPLIER_QUALIFICATION`，`action=REVIEW_APPROVE`——方案甲裁决 20261012：资质复核域用 `REVIEW_*`，`AUDIT_*` 专属于供应商准入域；与实存测试 `SupplierQualificationAuditRecordTest:61` 断言一致，本文旧版写 `AUDIT_APPROVE` 会把资质留痕串域，已更正）
 - **When** `decision=REJECT` 但 `comment` 为空
 - **Then** `40001`（与建档审核同口径，驳回必须给理由）
 - **When** `decision=REJECT` 且带 `comment`

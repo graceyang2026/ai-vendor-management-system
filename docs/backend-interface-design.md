@@ -81,11 +81,13 @@ com.srm.core
 | doc_type | String（`DocType` 枚举） | BUSINESS_LICENSE / OTHER |
 | file_url | String | |
 | effective_date / expiry_date | LocalDate | 单项证照有效期（与 `Supplier` 实体同名字段不同义） |
-| status | String（`QualificationStatus` 枚举） | `PENDING_REVIEW` / `APPROVED` / `REJECTED`（V1.5 新增） |
+| status | String（`QualificationStatus` 枚举） | `PENDING` / `APPROVED` / `REJECTED`（码值裁决 20261012：资质子状态用 PENDING，**不得与供应商/绩效的 `PENDING_REVIEW` 混用**） |
 | reviewed_by | Long | 审核人（AUDITOR）用户 ID，可空（V1.5 新增） |
 | reviewed_at | LocalDateTime | 审核时间，可空（V1.5 新增） |
 | review_comment | String | 审核意见，驳回时必填（V1.5 新增） |
-| created_at | LocalDateTime | |
+| version | Integer | `@Version`，乐观锁（DDL④ 裁决 20261012 **已落地**，`schema.sql` L83 `DEFAULT 1`）；是 `QualificationReviewRequest.version` 的取值源，不匹配 → `40901` |
+| created_at / updated_at | LocalDateTime | |
+| deleted | Integer | `@TableLogic` 逻辑删除（`schema.sql` L86）；生成列 `approved_key` 以 `deleted = 0` 为前提，逻辑删除件自动释放唯一键位 |
 
 > `expired` 字段**不持久化**，Response 组装时用 `expiry_date.isBefore(LocalDate.now())` 实时计算，**且仅对 `status = APPROVED` 的记录参与合规算分与 `risk_warning` 判定**（裁决 20261011）。
 
@@ -132,17 +134,18 @@ com.srm.core
 | decided_by | Long（可空） | FK |
 | decided_at | LocalDateTime（可空） | |
 | decision_comment | String（可空） | |
+| version | Integer | `@Version`，乐观锁；**裁决 20261013 候选 A**：作为 `LifecycleRequestResponse.version` 对外输出，是 `LifecycleDecisionRequest.version` 的唯一取值源。⚠️ **DDL 从未落地**（实测 `schema.sql` L165-193 `lifecycle_request` 建表段无 `version` 列，HEAD 提交版本同样没有——非回归遗失），故 #17 决策步的 `40901` 当前无落库基础；已列为目标态 DDL 增量（见 api-spec §0「目标态 DDL 增量」④），待 backend-dev 补列 + 建实体时挂 `@Version`。本文旧版句「DB 列 `lifecycle_request.version` DEFAULT 1」属不实陈述，已更正 |
 
 ### 2.6 `AuditLog`（表 `audit_log`，只插入不更新）
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | id | Long | PK |
-| entity_type | String（`EntityType` 枚举） | SUPPLIER / PERFORMANCE_EVALUATION / LIFECYCLE_REQUEST / USER |
+| entity_type | String（`EntityType` 枚举，**共 5 值**） | SUPPLIER / PERFORMANCE_EVALUATION / LIFECYCLE_REQUEST / USER / **SUPPLIER_QUALIFICATION**（第五值已在代码 `audit/EntityType.java` 落地，实测确认；本文旧版仅列四值属滞后，已更正。准入期连带批复仍归 `SUPPLIER` 域） |
 | entity_id | Long | |
 | operator_id | Long | FK |
 | operator_role | String（`Role` 枚举） | 落库时的快照角色，不随用户后续改角色变化 |
-| action | String（`AuditAction` 枚举，共 11 码，与 `audit/AuditAction.java` 逐一对应） | 业务域：SUBMIT / AUDIT_APPROVE / AUDIT_REJECT / REVIEW_APPROVE / REVIEW_REJECT / DECISION_APPROVE / DECISION_REJECT（停用/恢复/淘汰统一用 DECISION_*）；用户域（entity_type=USER）：CREATE_USER / UPDATE_USER / ENABLE_USER / DISABLE_USER |
+| action | String（`AuditAction` 枚举，共 11 码，与 `audit/AuditAction.java` 逐一对应） | **域归属按下表取值，不可跨域混用**（裁决 20261012 方案甲：零新增码，靠 `entity_type` 区分域）：供应商准入域（`entity_type=SUPPLIER`）→ `SUBMIT` / `AUDIT_APPROVE` / `AUDIT_REJECT`；资质复核域（`entity_type=SUPPLIER_QUALIFICATION`）→ `REVIEW_APPROVE` / `REVIEW_REJECT`；绩效复核域（`entity_type=PERFORMANCE_EVALUATION`）→ `SUBMIT`（发起）/ `REVIEW_APPROVE` / `REVIEW_REJECT`；生命周期域（`entity_type=LIFECYCLE_REQUEST`）→ `DECISION_APPROVE` / `DECISION_REJECT`（停用/恢复/淘汰统一用 `DECISION_*`）；用户域（`entity_type=USER`）→ `CREATE_USER` / `UPDATE_USER` / `ENABLE_USER` / `DISABLE_USER` |
 | old_status / new_status | String（可空） | |
 | result | String（`AuditResult` 枚举） | SUCCESS / REJECTED |
 | comment | String（可空） | |
@@ -190,7 +193,7 @@ public interface SupplierService {
     SupplierResponse getById(Long id, UserPrincipal operator);
     PageResult<SupplierResponse> list(String status, String keyword, int page, int pageSize, UserPrincipal operator);
     void delete(Long id, UserPrincipal operator);
-    SupplierResponse submit(Long id, UserPrincipal operator);
+    SupplierResponse submit(Long id, SupplierSubmitRequest request, UserPrincipal operator);
     SupplierResponse audit(Long id, SupplierAuditDecisionRequest request, UserPrincipal operator);
     QualificationResponse addQualification(Long supplierId, QualificationCreateRequest request, UserPrincipal operator);
     List<QualificationResponse> listQualifications(Long supplierId, UserPrincipal operator);
@@ -200,11 +203,11 @@ public interface SupplierService {
 
 - `create`：只允许 `STAFF`，落地状态 `DRAFT`，`created_by` = operator.id。`tax_no` 唯一性双层校验：应用层预检（`tax_no` 相同且 `deleted = 0` 的记录已存在）→ `BusinessException(DUPLICATE_IN_PROGRESS)`（`40902`，友好报错）；并发穿透预检时由 DB `UNIQUE(tax_no_active)` 兜底，Service 捕获 `DuplicateKeyException` 同样转译 `40902`（裁决 20261010：税号冲突归 `40902` 业务冲突族，见 api-spec 第 2 节校验规则 + 错误码表）。逻辑删除供应商的 `tax_no_active` 为 NULL 不占键位，允许重新沿用该税号。字段格式校验由 Controller 层 Bean Validation 承担（`@NotBlank`/`@Pattern`，正则与 api-spec 第 2 节校验规则表逐字同源）：格式非法 → `VALIDATION_FAILED`（`40001`）先行，唯一性冲突 → `40902` 在后，Service 不重复校验。
 - `update`：只允许状态 `DRAFT`/`RETURNED` 且 `operator.id == supplier.createdBy`，否则抛 `BusinessException(ErrorCode.STATUS_NOT_ALLOWED)`（→ HTTP 层映射 `40302`）。
-- `submit`：校验至少存在一条未过期的 `BUSINESS_LICENSE` 资质，否则 `ErrorCode.VALIDATION_FAILED`（`40001`）；成功后调用 `SupplierStateMachine.transition(...)` 并写 `AuditLog`。
+- `submit`：校验至少存在一条未过期的 `BUSINESS_LICENSE` 资质，否则 `ErrorCode.VALIDATION_FAILED`（`40001`）；**裁决 20261013 候选 B**：请求体 `SupplierSubmitRequest{version}` 必带，`version` 缺失或与当前 `supplier.version` 不一致 → `OPTIMISTIC_LOCK_CONFLICT`（`40901`，状态迁移也纳入并发控制，防多端脏写）；成功后调用 `SupplierStateMachine.transition(...)` 并写 `AuditLog`。
 - `audit`：`version` 不匹配 → `ErrorCode.OPTIMISTIC_LOCK_CONFLICT`（`40901`）；`decision=REJECT` 但 `comment` 为空 → `40001`。
 - **数据隔离（裁决 20261011，目标态）**：`getById`/`list`/`listQualifications` 必须把 `operator` 带进查询条件，不得取全量后交前端过滤：`STAFF` 得「公有资产区（`NORMAL`/`SUSPENDED`/`ELIMINATED`）+ 本人 `DRAFT`/`RETURNED`」；`AUDITOR`/`ADMIN` 得全量（ADMIN 仅只读，写操作 `40301`）。命中规则 A 但非本人 → `STATUS_NOT_ALLOWED`（`40302`）。
-- `addQualification`：允许状态由 `DRAFT`/`RETURNED` **放宽为额外包含 `NORMAL`**（解除“准入后资质无法维护”死锁）；仍限 `operator.id == supplier.created_by`（ADMIN 不参与业务写），新记录一律 `status = PENDING_REVIEW`，**不直接生效**。
-- `reviewQualification`（V1.5 新增）：只允许 `AUDITOR`；`APPROVE` → 新资质置 `APPROVED`，同事务将同 `supplier_id` + `doc_type` 的旧 `APPROVED` 记录置 `REJECTED`（不物理删），并重算 `risk_warning`（无过期有效资质则置 `false`）；`REJECT` → 新资质置 `REJECTED`，旧资质保持不变，供应商状态不变；`decision=REJECT` 但 `comment` 为空 → `40001`；全程写 `AuditLog`（`entity_type=SUPPLIER_QUALIFICATION`，复用 `AUDIT_APPROVE`/`AUDIT_REJECT`）。
+- `addQualification`：允许状态由 `DRAFT`/`RETURNED` **放宽为额外包含 `NORMAL`**（解除“准入后资质无法维护”死锁）；仍限 `operator.id == supplier.created_by`（ADMIN 不参与业务写），新记录一律 `status = PENDING`（码值裁决 20261012），**不直接生效**。
+- `reviewQualification`（V1.5 新增，**范围限定于裁决 20261012**：仅服务 `NORMAL` 存续期补传件，准入期件跟 #7 audit 连带批复）：只允许 `AUDITOR`；前置不满足（供应商非 `NORMAL` 或资质非 `PENDING`）→ `40302`；`APPROVE` → 新资质置 `APPROVED`，同 `supplier_id`+`doc_type` 的旧 `APPROVED` 件**自动退位（历史保留不物理删，状态不变）**，并发置生效位竞态由 DB 生成列 `uk_supplier_approved_doc` 兜底（`DuplicateKeyException` → `40902`），并重算 `risk_warning`（无过期有效资质则置 `false`）；`REJECT`（入参字段名是 `action`/`review_comment`，非 `decision`/`comment`）→ 新资质置 `REJECTED`、`review_comment` 必填（缺失 → `40001`），**旧件保持生效位**，供应商状态不变；两分支均回写 `reviewed_by`/`reviewed_at`；全程写 `AuditLog`（**审计码按方案甲裁决 20261012：`REVIEW_APPROVE`/`REVIEW_REJECT`（非 `AUDIT_*`），`entity_type=SUPPLIER_QUALIFICATION`、`entity_id`=资质记录 ID、冗余 `supplier_id`；禁止把裸 `APPROVE` 写入审计表**）。
 
 ### 4.3 `SupplierStateMachine`
 
@@ -247,7 +250,7 @@ public interface LifecycleRequestService {
 ```
 
 - `create`：`type=SUSPEND` 要求 `supplier.status==NORMAL`；`type=RESUME` 要求 `supplier.status==SUSPENDED`；`type=ELIMINATE` 要求 `supplier.status` 为 `NORMAL` 或 `SUSPENDED`；供应商已处终态 `ELIMINATED` 时拒绝任何新申请；已存在同 `supplier_id`+`type` 的 `PENDING` 记录 → `40902`（并发兜底：DB 唯一索引 `uk_supplier_active_lifecycle` **已落地于 `schema.sql`**，命中 `DuplicateKeyException` 转译 40902）。
-- `decide`：首先校验 `request.version` 与关联供应商当前 `version` 一致（对齐 §0 乐观锁铁律），不一致 → `ErrorCode.OPTIMISTIC_LOCK_CONFLICT`（`40901`）；`APPROVE` 时才联动 `SupplierService`（内部方法，非对外接口）把供应商状态置 `SUSPENDED`/`NORMAL`/`ELIMINATED`（`type=ELIMINATE` 通过后为终态，之后不可再建任何申请）；`REJECT` 只改本记录状态。全程写 `AuditLog(entity_type=LIFECYCLE_REQUEST)`。
+- `decide`：首先校验 `request.version` 与**申请单自身**的 `LifecycleRequest.version` 一致（对齐 §0 乐观锁全量四实体铁律与裁决 20261013 候选 A：取值源为 #13 返回的 `LifecycleRequestResponse.version`，**不是供应商 version**），不一致 → `ErrorCode.OPTIMISTIC_LOCK_CONFLICT`（`40901`）；`APPROVE` 时才联动 `SupplierService`（内部方法，非对外接口）把供应商状态置 `SUSPENDED`/`NORMAL`/`ELIMINATED`（`type=ELIMINATE` 通过后为终态，之后不可再建任何申请）；`REJECT` 只改本记录状态。全程写 `AuditLog(entity_type=LIFECYCLE_REQUEST)`。
 
 ### 4.6 `AuditLogService`
 
@@ -266,7 +269,7 @@ public interface AuditLogService {
 
 > **为何用重载而不改现有 8 参签名**（裁决 20261011）：`record(...)` 现有 8 参签名已被 `UserServiceImpl` 等处调用并有测试覆盖，改签名会连带改动已有实现与用例；旧签名内部委托 `supplierId = null`（用户域审计本就无归属供应商），新增重载只给供应商域使用，**向后兼容、不破坏现有测试**。
 >
-> `list(...)` 新增 `operator` 是**必须**的：否则无法实现 api-spec §0 规则 C 的行级隔离（STAFF 仅 `operator_id = 本人` OR `supplier_id IN 本人名下供应商`）。现实现 `AuditLogServiceImpl.list` 无此参数且 `audit_log` 表无 `supplier_id` 列，两者分属代码与 DDL 增量（DDL 目标态的权威记录已内联至 api-spec §0「目标态 DDL 增量」②，现状以 `schema.sql` 为准）。
+> `list(...)` 新增 `operator` 是**必须**的：否则无法实现 api-spec §0 规则 C 的行级隔离（STAFF 仅 `operator_id = 本人` OR `supplier_id IN 本人名下供应商`）。现实现 `AuditLogServiceImpl.list` 仍无此参数（属代码增量）；DDL 侧 `audit_log.supplier_id` 冗余列 + `idx_supplier_id` **已落地（`schema.sql` L202/L213，裁决 20261012 DDL②）**——本文旧版「`audit_log` 表无 `supplier_id` 列」的陈述已过期，实测更正：现在缺的只是查询条件与写入点的业务代码，不再是库表结构。
 
 > `record(...)` 内部的 Mapper 写入失败**不得向上抛出**中断主业务事务（已有测试 `AuditLogServiceImplTest#recordNeverPropagatesMapperFailures` 覆盖这一约束）——记日志失败只应打 ERROR 日志，不应导致审核/提交等主操作跟着回滚失败。
 
@@ -337,7 +340,7 @@ class SupplierController {
     ApiResponse<Void> delete(@PathVariable Long id);
 
     @PreAuthorize("hasRole('STAFF')")
-    ApiResponse<SupplierResponse> submit(@PathVariable Long id);
+    ApiResponse<SupplierResponse> submit(@PathVariable Long id, @RequestBody @Valid SupplierSubmitRequest request);
 
     @PreAuthorize("hasRole('AUDITOR')")
     ApiResponse<SupplierResponse> audit(@PathVariable Long id, @RequestBody @Valid SupplierAuditDecisionRequest request);
@@ -474,8 +477,9 @@ DTO 的字段定义以 `docs/api-spec.md` 对应 TS `interface` 为唯一事实�
 |---|---|---|
 | `LoginRequest` / `LoginResponse` | 同名 | `dto.auth` |
 | `SupplierResponse` / `SupplierCreateRequest` / `SupplierUpdateRequest` | 同名 | `dto.supplier` |
+| `SupplierSubmitRequest` | 同名（**仅 `version` 一字段**，裁决 20261013 候选 B 新增） | `dto.supplier` |
 | `SupplierAuditDecisionRequest` | 同名 | `dto.supplier` |
-| `QualificationResponse` / `QualificationCreateRequest` / `QualificationReviewRequest` | 同名 | `dto.qualification`（`QualificationReviewRequest` 为 V1.5 新增：`decision` + `comment`，与 `SupplierAuditDecisionRequest` 同构） |
+| `QualificationResponse` / `QualificationCreateRequest` / `QualificationReviewRequest` | 同名 | `dto.qualification`（`QualificationReviewRequest` 字段定稿于裁决 20261012：**`action`(`APPROVE`/`REJECT`) + `review_comment`(REJECT 必填) + `version`（必带）**，与 `SupplierAuditDecisionRequest` 同款口径但**字段名不同**：入参叫 `action`/`review_comment`，而非 `decision`/`comment`） |
 | `LifecycleRequestResponse` / `LifecycleRequestCreateRequest` / `LifecycleDecisionRequest` | 同名 | `dto.lifecycle` |
 | `PerformanceFactRecord` | 同名 | `dto.performance` |
 | `PerformanceEvaluationResult` | 同名 | `dto.performance` |
