@@ -118,6 +118,11 @@
                             <el-table-column prop="type" label="供应商类型" width="130"></el-table-column>
                             <el-table-column prop="contact" label="联系人" width="110"></el-table-column>
                             <el-table-column prop="phone" label="联系电话" width="130"></el-table-column>
+                            <el-table-column label="合作有效期" width="310">
+                                <template #default="scope">
+                                    <span style="font-size: 13px; color: #606266;">{{ scope.row.effectiveTime || '未设置' }} 至 {{ scope.row.expireTime || '未设置' }}</span>
+                                </template>
+                            </el-table-column>
                             <el-table-column prop="status" label="当前状态与风险标记" width="180">
                                 <template #default="scope">
                                     <el-tag :type="getStatusTagType(scope.row.status)">{{ scope.row.status }}</el-tag>
@@ -177,6 +182,26 @@
                                 <el-form-item label="企业地址">
                                     <el-input v-model="form.address" placeholder="公司详细注册/办公地址 (选填)"></el-input>
                                 </el-form-item>
+                                <el-form-item label="生效时间" required>
+                                    <el-date-picker 
+                                        v-model="form.effectiveTime" 
+                                        type="datetime" 
+                                        placeholder="选择合作生效时间" 
+                                        format="YYYY-MM-DD HH:mm:ss"
+                                        value-format="YYYY-MM-DD HH:mm:ss"
+                                        style="width: 100%;">
+                                    </el-date-picker>
+                                </el-form-item>
+                                <el-form-item label="失效时间" required>
+                                    <el-date-picker 
+                                        v-model="form.expireTime" 
+                                        type="datetime" 
+                                        placeholder="选择合作失效时间" 
+                                        format="YYYY-MM-DD HH:mm:ss"
+                                        value-format="YYYY-MM-DD HH:mm:ss"
+                                        style="width: 100%;">
+                                    </el-date-picker>
+                                </el-form-item>
                                 <el-form-item label="营业执照资质附件" required>
                                     <el-upload action="#" :auto-upload="false" :limit="1">
                                         <el-button type="primary" plain>上传营业执照 (PDF/图片)</el-button>
@@ -212,6 +237,8 @@
                                     <el-tag :type="getStatusTagType(currentSupplier.status)">{{ currentSupplier.status }}</el-tag>
                                     <el-tag v-if="currentSupplier.risk_warning" type="danger" effect="dark" style="margin-left: 5px;">风险预警 (硬阻断开启)</el-tag>
                                 </el-descriptions-item>
+                                <el-descriptions-item label="合作生效时间">{{ currentSupplier.effectiveTime || '未设置' }}</el-descriptions-item>
+                                <el-descriptions-item label="合作失效时间">{{ currentSupplier.expireTime || '未设置' }}</el-descriptions-item>
                                 <el-descriptions-item label="联系人">{{ currentSupplier.contact }} ({{ currentSupplier.phone }})</el-descriptions-item>
                                 <el-descriptions-item label="联系邮箱">{{ currentSupplier.email || '未填写' }}</el-descriptions-item>
                                 <el-descriptions-item label="企业地址" :span="2">{{ currentSupplier.address || '未填写' }}</el-descriptions-item>
@@ -267,7 +294,7 @@
                                     <el-tag size="small" type="info">{{ scope.row.oldStatus }}</el-tag>
                                 </template>
                             </el-table-column>
-                            <el-table-column prop="newStatus" label="新状态" width="120">
+                            <el-table-column prop="newStatus" label="newStatus" width="120">
                                 <template #default="scope">
                                     <el-tag size="small" :type="getStatusTagType(scope.row.newStatus)">{{ scope.row.newStatus }}</el-tag>
                                 </template>
@@ -382,7 +409,7 @@
                                             <strong style="margin-right: 15px;">综合评级:</strong>
                                             <el-tag class="grade-tag" :type="getGradeTagType(computedResult.grade)">{{ computedResult.grade }} 级 ({{ getGradeDesc(computedResult.grade) }})</el-tag>
                                         </el-col>
-                                    </row>
+                                    </el-row>
                                 </div>
 
                                 <el-form-item style="margin-top: 25px;">
@@ -457,7 +484,7 @@
                 <el-button @click="statusApplyDialogVisible = false">取消</el-button>
                 <el-button type="primary" @click="submitStatusApply">提交申请 (送审计员终审)</el-button>
             </template>
-        </dialog>
+        </el-dialog>
     </div>
 
     <script>
@@ -495,15 +522,15 @@
                     });
                 });
 
-                // 供应商基础档案 (增加 risk_warning 规范标记)
+                // 供应商基础档案 (增加 effectiveTime, expireTime 与 risk_warning 规范标记)
                 const suppliers = ref([
-                    { name: '北京智造科技有限公司', taxId: '91110108MA01982X', type: '生产制造业', contact: '王业务', phone: '13800138000', email: 'wang@bm.com', address: '北京市海淀区科技园1号', licenseFile: '营业执照_智造.pdf', status: '草稿/待提交', risk_warning: false },
-                    { name: '上海华联部件有限公司', taxId: '913100006782103Y', type: '生产制造业', contact: '李经理', phone: '13911112222', email: 'li@hualian.com', address: '上海市浦东新区张江高科', licenseFile: '营业执照_华联.pdf', status: '待修改', risk_warning: false },
-                    { name: '深圳迅捷物流有限公司', taxId: '914403003009821Z', type: '服务外包商', contact: '张总', phone: '13700009999', email: 'service@xunjie.com', address: '深圳市南山区', licenseFile: '营业执照_迅捷.pdf', status: '正常/合作中', risk_warning: false },
-                    { name: '沧州重工机械配件厂', taxId: '91130900MA07YY88', type: '生产制造业', contact: '赵厂长', phone: '13699887766', email: 'zhao@czzg.com', address: '河北省沧州市开发区', licenseFile: '营业执照_沧州重工.pdf', status: '停用', risk_warning: true }
+                    { name: '北京智造科技有限公司', taxId: '91110108MA01982X', type: '生产制造业', contact: '王业务', phone: '13800138000', email: 'wang@bm.com', address: '北京市海淀区科技园1号', effectiveTime: '2026-01-01 00:00:00', expireTime: '2028-12-31 23:59:59', licenseFile: '营业执照_智造.pdf', status: '草稿/待提交', risk_warning: false },
+                    { name: '上海华联部件有限公司', taxId: '913100006782103Y', type: '生产制造业', contact: '李经理', phone: '13911112222', email: 'li@hualian.com', address: '上海市浦东新区张江高科', effectiveTime: '2025-06-01 00:00:00', expireTime: '2027-05-31 23:59:59', licenseFile: '营业执照_华联.pdf', status: '待修改', risk_warning: false },
+                    { name: '深圳迅捷物流有限公司', taxId: '914403003009821Z', type: '服务外包商', contact: '张总', phone: '13700009999', email: 'service@xunjie.com', address: '深圳市南山区', effectiveTime: '2025-01-01 00:00:00', expireTime: '2026-12-31 23:59:59', licenseFile: '营业执照_迅捷.pdf', status: '正常/合作中', risk_warning: false },
+                    { name: '沧州重工机械配件厂', taxId: '91130900MA07YY88', type: '生产制造业', contact: '赵厂长', phone: '13699887766', email: 'zhao@czzg.com', address: '河北省沧州市开发区', effectiveTime: '2024-03-01 00:00:00', expireTime: '2026-03-01 00:00:00', licenseFile: '营业执照_沧州重工.pdf', status: '停用', risk_warning: true }
                 ]);
 
-                const form = reactive({ name: '', taxId: '', type: '', contact: '', phone: '', email: '', address: '', remark: '', licenseFile: '营业执照正本.pdf' });
+                const form = reactive({ name: '', taxId: '', type: '', contact: '', phone: '', email: '', address: '', effectiveTime: '', expireTime: '', remark: '', licenseFile: '营业执照正本.pdf' });
                 const currentSupplier = ref({});
 
                 // ---------------- 绩效量化评价核心逻辑 (V1.3 对齐版) ----------------
@@ -610,7 +637,6 @@
                     recordLog(factForm.supplierName, 'Yangwei (业务员)', '绩效客观事实录入', '正常/合作中', '正常/合作中', logComment);
                     
                     if (res.grade === 'D') {
-                        // 依照 TDD 修正提示语：不自动改状态为 SUSPENDED，仅生成风险预警并阻断下单
                         ElementPlus.ElMessageBox.alert(`已提交客观事实单！根据 V1.3 TDD 规范，算分结果为 D 级 (${res.totalScore}分) 时，AUDITOR 复核后系统将【打上风险预警标记】并开启【下单与结算强阻断】。系统不会自动停用该供应商，若需终止合作请手动提交停用申请。`, '风险阻断预警', { type: 'warning' });
                     } else {
                         ElementPlus.ElMessage.success('客观事实明细单已存库 (Draft)，已触发算分引擎计算并成功留存日志！');
@@ -628,7 +654,7 @@
 
                 const openAddPage = () => {
                     isEdit.value = false;
-                    Object.assign(form, { name: '', taxId: '', type: '', contact: '', phone: '', email: '', address: '', remark: '', licenseFile: '全新营业执照_扫描件.pdf' });
+                    Object.assign(form, { name: '', taxId: '', type: '', contact: '', phone: '', email: '', address: '', effectiveTime: '', expireTime: '', remark: '', licenseFile: '全新营业执照_扫描件.pdf' });
                     navigateTo('supplier-edit');
                 };
 
@@ -639,8 +665,8 @@
                 };
 
                 const saveForm = (targetStatus) => {
-                    if (!form.name || !form.taxId || !form.contact || !form.phone) {
-                        ElementPlus.ElMessage.error('请填写完整供应商名称、统一代码及联系方式等必填项');
+                    if (!form.name || !form.taxId || !form.contact || !form.phone || !form.effectiveTime || !form.expireTime) {
+                        ElementPlus.ElMessage.error('请填写完整供应商名称、统一代码、联系方式以及合作生效/失效时间等必填项');
                         return;
                     }
                     const existingIdx = suppliers.value.findIndex(s => s.taxId === form.taxId);
@@ -653,7 +679,7 @@
                     }
 
                     const actionType = isEdit.value ? (targetStatus === '待审核' ? '修改并提交准入' : '修改草稿') : (targetStatus === '待审核' ? '新增并提交准入' : '新增档案');
-                    recordLog(form.name, 'Yangwei (业务员)', actionType, oldStatus, targetStatus, targetStatus === '待审核' ? '提交给审计员准入审批' : '保存草稿信息');
+                    recordLog(form.name, 'Yangwei (业务员)', actionType, oldStatus, targetStatus, targetStatus === '待审核' ? `提交给审计员准入审批 (有效期: ${form.effectiveTime} 至 ${form.expireTime})` : `保存草稿信息 (有效期: ${form.effectiveTime} 至 ${form.expireTime})`);
 
                     ElementPlus.ElMessage.success(targetStatus === '待审核' ? '准入申请已提交至审计员审核，系统已生成操作日志' : '草稿保存成功');
                     navigateTo('supplier-list');
