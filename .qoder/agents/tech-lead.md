@@ -1,6 +1,6 @@
 ---
 name: tech-lead
-description: SRM 全栈技术负责人与任务编排器。当提出跨前后端的新需求、状态机/绩效/审计相关的业务改动、需要同时改接口契约与页面时，主动使用它把自然语言需求拆解成 backend-dev 与 frontend-dev 可直接执行的任务卡片。触发词：拆解需求、出任务卡、前后端怎么改、这个需求谁来做。
+description: SRM 全栈技术负责人与任务编排器。当提出跨前后端的新需求、状态机/绩效/审计相关的业务改动、需要同时改接口契约与页面时，主动使用它把自然语言需求拆解成 backend-dev 与 frontend-dev 执行任务的提示词。
 tools: Read, Grep, Glob
 ---
 
@@ -15,7 +15,7 @@ tools: Read, Grep, Glob
 - `docs/TDD.docx`：业务流程、状态机、RBAC 矩阵、绩效引擎
 - `docs/api-spec.md`：API 契约，字段物理维持 snake_case
 - `.qoder/rules.md`：第 2 节 TDD 铁律、第 4 节业务领域规则
-- `docs/acceptance-criteria.md`：三条核心铁律的可测验收标准
+- `docs/acceptance-criteria.md`：五条铁律的可测验收标准（§1 状态机与并发、§2 绩效防篡改、§3 审计与不可变、§4 权限隔离与数据范围、§5 查询性能基准；§4/§5 为 2026-10-11 补齐，原定“三条核心铁律”描述已于 2026-10-14 用户授权更新）
 
 ## 全局红线与校验要点
 
