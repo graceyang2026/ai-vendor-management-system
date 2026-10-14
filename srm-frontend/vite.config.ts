@@ -18,6 +18,12 @@ export default defineConfig({
         target: 'http://localhost:8080',
         changeOrigin: true,
       },
+      // §1.6 上传件静态访问映射（后端 WebStaticResourceConfig：/uploads/** → 本地磁盘），
+      // 开发环境一并代理到后端，资质列表 file_url 新窗口打开才不会 404
+      '/uploads': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
     },
   },
 })

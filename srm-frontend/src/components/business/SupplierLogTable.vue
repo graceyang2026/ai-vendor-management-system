@@ -5,7 +5,7 @@ import { getSupplierLogListApi } from '@/api/supplier-log'
 import { ApiError } from '@/utils/request'
 import { SUPPLIER_LOG_DEMO_LIST } from '@/constants/supplierLogDemo'
 import {
-  ALL_ACTION_OPTIONS,
+  BUSINESS_ACTION_OPTIONS,
   formatCreatedAt,
   formatOperator,
   getActionLabel,
@@ -129,7 +129,7 @@ onMounted(loadLogs)
       </el-form-item>
       <el-form-item label="操作类型">
         <el-select v-model="filters.action" placeholder="全部类型" clearable style="width: 170px">
-          <el-option v-for="option in ALL_ACTION_OPTIONS" :key="option.value" :label="option.label" :value="option.value" />
+          <el-option v-for="option in BUSINESS_ACTION_OPTIONS" :key="option.value" :label="option.label" :value="option.value" />
         </el-select>
       </el-form-item>
       <el-form-item>

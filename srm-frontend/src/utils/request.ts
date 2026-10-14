@@ -90,6 +90,11 @@ const request = {
   post<T>(url: string, data?: object): Promise<ApiResponse<T>> {
     return service.post<ApiResponse<T>>(url, data).then((res) => res.data)
   },
+
+  /** multipart/form-data 专用（§1.6 文件上传；axios 对 FormData 自动设置 Content-Type boundary，不得手工指定） */
+  postForm<T>(url: string, formData: FormData): Promise<ApiResponse<T>> {
+    return service.post<ApiResponse<T>>(url, formData).then((res) => res.data)
+  },
   put<T>(url: string, data?: object): Promise<ApiResponse<T>> {
     return service.put<ApiResponse<T>>(url, data).then((res) => res.data)
   },

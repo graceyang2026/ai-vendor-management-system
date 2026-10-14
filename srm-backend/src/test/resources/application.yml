@@ -3,6 +3,13 @@ spring:
     name: srm-backend-test
   jackson:
     property-naming-strategy: SNAKE_CASE
+  servlet:
+    multipart:
+      # 与主 application.yml 同档（11MB/12MB）：测试环境与生产环境保持一致的容器上限，
+      # 避免以后改用 RANDOM_PORT + 真 HTTP 上传时，被 Boot 默认的 1MB 档口先拦下而与契约口径不符。
+      # 现有 MockMvc 用例走 MockMultipartFile，不经容器解析，因此校验到的始终是服务层那条 10MB 业务红线。
+      max-file-size: 11MB
+      max-request-size: 12MB
   datasource:
     url: jdbc:h2:mem:srm_test_${random.uuid};MODE=LEGACY;DB_CLOSE_DELAY=-1
     username: sa
@@ -31,6 +38,12 @@ srm:
   jwt:
     secret: srm-test-jwt-secret-key-0123456789abcdefghijklmnopqrstuvwxyz
     expiration-ms: 86400000
+  file:
+    # 测试兜底存储根：一律落在 target/ 下（.gitignore 已覆盖），绝不允许把上传件写进默认 ./uploads
+    # 而污染仓库工作目录。上传专项集成测试另有 @SpringBootTest(properties=…) 指定的独立临时根，
+    # 并在用例结束后自行清理。
+    storage-root: ./target/test-uploads
+    public-url-prefix: /uploads
 
 logging:
   level:

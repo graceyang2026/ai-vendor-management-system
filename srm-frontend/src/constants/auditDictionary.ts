@@ -76,6 +76,94 @@ export const SUPPLIER_STATUS = {
 } as const
 export type SupplierStatusCode = (typeof SUPPLIER_STATUS)[keyof typeof SUPPLIER_STATUS]
 
+/**
+ * SupplierType —— 供应商类型三码（存码显中文：接口与库内传输存英文码，中文文案由本字典映射）。
+ * 码值权威源（实文核对 2026-10-14）：
+ * - srm-backend/src/main/java/com/srm/core/dto/supplier/SupplierValidationPatterns.java TYPE_REGEX
+ *   （后端 MVP 批次无独立 SupplierType.java 枚举类，TYPE_REGEX 三码即传码权威；entity/Supplier.java 注释同码）；
+ * - docs/api-spec.md §2 L105「SupplierType」+ 契约文档附录 A1 type 行。
+ * 中文文案源：用户裁决 20261012（原型「展示-采购员 v1.1」建档表单下拉三选项）。
+ */
+export const SUPPLIER_TYPE = {
+  MANUFACTURING: 'MANUFACTURING',
+  SERVICE_OUTSOURCING: 'SERVICE_OUTSOURCING',
+  DISTRIBUTOR: 'DISTRIBUTOR',
+} as const
+export type SupplierTypeCode = (typeof SUPPLIER_TYPE)[keyof typeof SUPPLIER_TYPE]
+
+const SUPPLIER_TYPE_LABEL_CN: Record<SupplierTypeCode, string> = {
+  [SUPPLIER_TYPE.MANUFACTURING]: '生产制造业',
+  [SUPPLIER_TYPE.SERVICE_OUTSOURCING]: '服务外包商',
+  [SUPPLIER_TYPE.DISTRIBUTOR]: '经销商或代理商',
+}
+
+/** 供应商类型中文：空值给 '-'，未知码原样回显（与 getStatusLabel 兜底口径一致，不报错）。 */
+export function getSupplierTypeLabel(code?: string | null): string {
+  if (!code) return '-'
+  return SUPPLIER_TYPE_LABEL_CN[code as SupplierTypeCode] ?? code
+}
+
+export interface SupplierTypeOption {
+  value: SupplierTypeCode
+  label: string
+}
+
+/** 建档/编辑表单「供应商类型」下拉选项（value=码，label=中文；传码显中文分层）。 */
+export const SUPPLIER_TYPE_OPTIONS: SupplierTypeOption[] = (
+  Object.keys(SUPPLIER_TYPE) as SupplierTypeCode[]
+).map((value) => ({ value, label: SUPPLIER_TYPE_LABEL_CN[value] }))
+
+/**
+ * QualificationDocType —— 证照类型两码（存码显中文，传码权威与中文文案单一来源）。
+ * 码值权威源（实文核对 2026-10-14）：
+ * - srm-backend/src/main/java/com/srm/core/dto/qualification/QualificationValidationPatterns.java
+ *   DOC_TYPE_REGEX（仅认 BUSINESS_LICENSE / OTHER 两码，中文/小写不接受）；
+ * - 契约文档 §1.7 字段表 + 附录 A2 doc_type 行 + docs/api-spec.md §2 资质 Qualification。
+ * 中文文案源：后端同文件 DOC_TYPE_REGEX 行注释「BUSINESS_LICENSE 营业执照 / OTHER 其他」
+ * （docs/mockups/ 原型实文核查无该下拉字段，"其他"即后端注释口径，已在会话留痕上报待复核）。
+ */
+export const QUALIFICATION_DOC_TYPE = {
+  BUSINESS_LICENSE: 'BUSINESS_LICENSE',
+  OTHER: 'OTHER',
+} as const
+export type QualificationDocTypeCode = (typeof QUALIFICATION_DOC_TYPE)[keyof typeof QUALIFICATION_DOC_TYPE]
+
+const QUALIFICATION_DOC_TYPE_LABEL_CN: Record<QualificationDocTypeCode, string> = {
+  [QUALIFICATION_DOC_TYPE.BUSINESS_LICENSE]: '营业执照',
+  [QUALIFICATION_DOC_TYPE.OTHER]: '其他',
+}
+
+/** 证照类型中文：空值给 '-'，未知码原样回显（与 getSupplierTypeLabel 兜底口径一致，不报错）。 */
+export function getQualificationDocTypeLabel(code?: string | null): string {
+  if (!code) return '-'
+  return QUALIFICATION_DOC_TYPE_LABEL_CN[code as QualificationDocTypeCode] ?? code
+}
+
+export interface QualificationDocTypeOption {
+  value: QualificationDocTypeCode
+  label: string
+}
+
+/** 上传资质表单「证照类型」下拉选项（value=码，label=中文；传码显中文分层）。 */
+export const QUALIFICATION_DOC_TYPE_OPTIONS: QualificationDocTypeOption[] = (
+  Object.keys(QUALIFICATION_DOC_TYPE) as QualificationDocTypeCode[]
+).map((value) => ({ value, label: QUALIFICATION_DOC_TYPE_LABEL_CN[value] }))
+
+/**
+ * QualificationStatus —— 资质三态（裁决 20261012：上传即待审，生效只能由 §2.2/§2.3 批复）。
+ * 码值权威源：后端 QualificationServiceImpl（QUAL_PENDING/QUAL_APPROVED/REJECTED 落库）+ 契约附录 A2 status 行。
+ * 与 LifecycleRequestStatus 同码值不同义：展示中文按 entity_type=SUPPLIER_QUALIFICATION 经
+ * getStatusLabel 分流取 QUALIFICATION_STATUS_LABEL（资质待审/已生效/已驳回），颜色沿用合表 STATUS_TAG_TYPE。
+ */
+export const QUALIFICATION_STATUS = {
+  PENDING: 'PENDING',
+  APPROVED: 'APPROVED',
+  REJECTED: 'REJECTED',
+} as const
+export type QualificationStatusCode = (typeof QUALIFICATION_STATUS)[keyof typeof QUALIFICATION_STATUS]
+
+
+
 /** LifecycleRequestStatus（api-spec 第 3 节）。 */
 export const LIFECYCLE_REQUEST_STATUS = {
   PENDING: 'PENDING',
@@ -362,8 +450,22 @@ export const ADMIN_ACTION_OPTIONS: ActionOption[] = toActionOptions([
   AUDIT_ACTION.DISABLE_USER,
 ])
 
-/** 后端 AuditAction 全量动作筛选（业务员日志页展示己方供应商上的审批动作时使用）。 */
-export const ALL_ACTION_OPTIONS: ActionOption[] = toActionOptions(Object.values(AUDIT_ACTION))
+/**
+ * 业务域动作筛选（业务员日志页「操作类型」下拉使用）：后端 AuditAction 去掉用户域四码后的业务域七码，
+ * 即业务员按可见的业务域操作类型筛选（提交送审 + 准入审核 + 绩效/资质复核 + 生命周期终审）。
+ * 用户域四码 CREATE_USER / UPDATE_USER / ENABLE_USER / DISABLE_USER 属 ADMIN（entity_type=USER，
+ * 仅 ADMIN 触发，见 docs/api-spec.md §5 AuditLogResponse.action 注释 + 第 6 节用户管理权限矩阵，
+ * 及 docs/acceptance-criteria.md §4 权限隔离），不进本筛选；此前端裁剪不改后端码值与接口传参。
+ */
+export const BUSINESS_ACTION_OPTIONS: ActionOption[] = toActionOptions([
+  AUDIT_ACTION.SUBMIT,
+  AUDIT_ACTION.AUDIT_APPROVE,
+  AUDIT_ACTION.AUDIT_REJECT,
+  AUDIT_ACTION.REVIEW_APPROVE,
+  AUDIT_ACTION.REVIEW_REJECT,
+  AUDIT_ACTION.DECISION_APPROVE,
+  AUDIT_ACTION.DECISION_REJECT,
+])
 
 /** 业务员（STAFF）自身可触发的动作：后端当前仅 SUBMIT，档案 CRUD 等动作属后端枚举扩展事项；用户域四码属 ADMIN，不进本筛选。 */
 export const STAFF_ACTION_OPTIONS: ActionOption[] = toActionOptions([AUDIT_ACTION.SUBMIT])

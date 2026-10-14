@@ -102,7 +102,7 @@ MVP 演示账号（启动时按需播种，仅当 `users` 表为空）：`admin/
 
 `SupplierStatus` = `'DRAFT' | 'PENDING_REVIEW' | 'NORMAL' | 'RETURNED' | 'SUSPENDED' | 'ELIMINATED'`
 
-`SupplierType` = `'MANUFACTURING' | 'SERVICE_OUTSOURCING' | 'DISTRIBUTOR'`（中文展示：生产制造业 / 服务外包商 / 经销商或代理商；值域源自「原型展示-采购员 v1.1」建档表单下拉三选项，用户裁决 20261012：采纳三值并按“传码显中文”分层——接口与库内传输存英文码，中文文案由前端字典映射，后端 `SupplierType` 枚举类为权威源，本节为契约唯一依据）
+`SupplierType` = `'MANUFACTURING' | 'SERVICE_OUTSOURCING' | 'DISTRIBUTOR'`（中文展示：生产制造业 / 服务外包商 / 经销商或代理商；值域源自「原型展示-采购员 v1.1」建档表单下拉三选项，用户裁决 20261012：采纳三值并按“传码显中文”分层——接口与库内传输存英文码，中文文案由前端字典映射，后端码值权威源为 `SupplierValidationPatterns.TYPE_REGEX`（当前未建独立 `SupplierType` 枚举类，三码值域以 `TYPE_REGEX` 为准；若后续补建枚举类需同步本句），本节为契约唯一依据）
 
 ### 对象定义
 
@@ -189,7 +189,7 @@ interface SupplierSubmitRequest {
 | POST | `/suppliers/{id}/submit` | STAFF（本人） | `DRAFT`/`RETURNED` → `PENDING_REVIEW`；要求已上传至少一份未过期营业执照资质，否则 `40001`。请求体 `SupplierSubmitRequest`（裁决 20261013 候选 B：**仅 `version` 一字段**，取 `SupplierResponse.version`），缺失或版本不匹配返回 `40901`（§0 乐观锁全量四实体口径延伸至状态迁移） |
 | POST | `/suppliers/{id}/audit` | AUDITOR | 审核决策，见下 |
 | POST | `/suppliers/{id}/qualifications` | STAFF（本人） | 上传资质，允许状态 `DRAFT`/`RETURNED`/`NORMAL`（裁决 20261011：解除“准入后资质无法维护”死锁）；无论建档随件还是存续期补传，新记录初始状态一律 `status=PENDING`（码值裁决 20261012：PENDING/APPROVED/REJECTED 三态），**不直接生效** |
-| GET | `/suppliers/{id}/qualifications` | ALL（**按 §0 隔离规则**） | 资质列表；默认仅返回 `APPROVED`（现行有效）与 `PENDING`（待审核）记录，`REJECTED` 仅供本人追溯 |
+| GET | `/suppliers/{id}/qualifications` | ALL（**按 §0 隔离规则**） | 资质列表；默认仅返回 `APPROVED`（现行有效）与 `PENDING`（待审核）记录，`REJECTED` 仅供本人追溯（行级隔离裁决 20261014：隔离仅对 STAFF 生效——非本人 STAFF 只见 APPROVED+PENDING，AUDITOR/ADMIN 全量可见含 REJECTED） |
 | PUT | `/qualifications/{id}/review` | AUDITOR | **范围限定（裁决 20261012）：仅服务于 `NORMAL` 存续期补传件的单独审批**；准入期资质不调用本接口，跟随 `POST /suppliers/{id}/audit` 整体批复。`APPROVE` → 新资质置 `APPROVED`，同 `supplier_id`+`doc_type` 的旧资质自动退位（历史保留不物理删）；`REJECT` → 新资质置 `REJECTED`，**旧资质保持生效位**，供应商 `NORMAL` 基础合作状态不受影响；审核动作回写 `reviewed_by`/`reviewed_at`/`review_comment`（请求体三字段 `action`/`review_comment`/`version` 见下方专节，口径照 #7 同款，用户裁决 20261012）。**审计留痕（方案甲裁决 20261012，用户拍板零新增码）**：`action` 复用现有 `REVIEW_APPROVE`/`REVIEW_REJECT` 码（不新造 `REVIEW_QUALIFICATION`），靠 `entity_type=SUPPLIER_QUALIFICATION` 区分域，`entity_id`=资质记录 ID，并冗余写入 `supplier_id`；准入期连带批复不单独落资质留痕（归 `SUPPLIER` 域随 audit 一笔，口径不变） |
 
 ### `POST /suppliers/{id}/audit`
@@ -234,7 +234,7 @@ Response `data`: `QualificationResponse`
 |---|---|---|---|
 | POST | `/files/upload` | STAFF | `multipart/form-data`，字段名 `file` |
 
-**校验规则**：仅允许 `pdf`/`jpg`/`jpeg`/`png`；单文件不超过 10MB；超出限制或类型不符返回 `40001`。
+**校验规则**：仅允许 `pdf`/`jpg`/`jpeg`/`png`；单文件不超过 10MB；超出限制或类型不符返回 `40001`。固定 `message` 文案（与后端 `FileUploadConstraints` 逐字同源，20261014 收录）：文件缺失=`请选择要上传的文件`；类型不符=`文件类型不支持，仅支持 pdf/jpg/jpeg/png 格式`；超限=`文件大小不能超过10MB`。
 
 **存储方式**：MVP 阶段存本地磁盘即可，不需要接云存储/OSS；后端通过静态资源映射（如 `/uploads/**` → 本地目录）对外提供返回的 `file_url`。
 
@@ -272,6 +272,8 @@ interface QualificationCreateRequest {
   expiry_date: string;
 }
 ```
+
+**资质上传校验规则（裁决 20261014 补，与后端 `QualificationValidationPatterns` 逐字同源）**：`doc_type` 必填且仅认两码 `BUSINESS_LICENSE`（中文展示“营业执照”）/ `OTHER`（中文展示“其他”，⑦ 已定稿），失败 message=`资质类型不合法（仅支持 BUSINESS_LICENSE/OTHER）`；`file_url` 必填（取文件上传返回），缺失 message=`资质文件地址不能为空`；`effective_date`/`expiry_date` 同供应商域日期规则（`yyyy-MM-dd` 且 expiry 晚于 effective），message=`日期格式不合法或失效日期早于生效日期`（与 supplier 同名字段同文案但**不同义**）。
 
 **资质审核闭环（裁决 20261011，对应需求“业务员上传及维护资质文件”+ TDD“资质过期人工提 SUSPEND”两者打通）**：
 

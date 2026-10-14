@@ -3,6 +3,15 @@ spring:
     name: srm-backend
   jackson:
     property-naming-strategy: SNAKE_CASE
+  servlet:
+    multipart:
+      # §1.6 文件上传：业务上限是"不超过 10MB"，由 FileStorageServiceImpl 以 getSize() 单点裁定。
+      # 容器档口刻意比业务上限高一档（11MB）而不是正好 10MB：各容器实现对"正好等于上限"的判定
+      # 存在 >= / > 差异，若把业务红线交给容器，恰好 10MB 的合法文件可能被容器先拒、口径不可控。
+      # 超过 11MB 的请求在解析阶段抛 MaxUploadSizeExceededException，由 GlobalExceptionHandler
+      # 折成与业务校验同一条 40001 文案（契约"超限→40001"两条路径都覆盖，不会冒 50001）。
+      max-file-size: 11MB
+      max-request-size: 12MB
   datasource:
     # 确保 ${DB_NAME} 这个数据库已经在 MySQL/KingbaseES 中 CREATE 了；凭据从 .env 读取，禁止硬编码
     url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:vendor_db}?useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true&characterEncoding=UTF-8
@@ -35,6 +44,12 @@ srm:
     secret: ${JWT_SECRET:srm-jwt-secret-key-change-me-in-production-2026}
     # token 有效期（毫秒），默认 24 小时
     expiration-ms: ${JWT_EXPIRATION_MS:86400000}
+  file:
+    # §1.6 MVP 本地磁盘存储根（契约不接 OSS）。生产/容器里用环境变量指到独立数据卷，
+    # 否则默认 ./uploads 会落在应用工作目录里（该目录不在 .gitignore 覆盖范围，见本轮会话留痕遗留问题）
+    storage-root: ${FILE_STORAGE_ROOT:./uploads}
+    # file_url 前缀；静态资源映射与 Security 只读放行共用此值（三处同源，防错配）
+    public-url-prefix: /uploads
 
 logging:
   level:

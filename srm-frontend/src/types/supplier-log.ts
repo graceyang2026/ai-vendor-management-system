@@ -26,8 +26,8 @@ export const SUPPLIER_STATUS_CODES = [
 ] as const
 
 /**
- * 后端 AuditAction 缺口说明（待后端枚举扩展，非前端可自行发明）：
- * 原型业务员动作"新增档案 / 修改档案 / 逻辑删除草稿 / 申请变更状态 / 申请恢复合作 / 绩效客观事实录入"
- * 在 AuditAction 中除"提交准入"= SUBMIT 外均无对应码值，
- * 需后端补充（建议 CREATE / UPDATE / DELETE_DRAFT / APPLY_LIFECYCLE 等）后前端再接入筛选。
+ * 用户管理扩展审计码归二期（用户裁决 20261014）：原型业务员动作"新增档案 / 修改档案 / 逻辑删除草稿 /
+ * 申请变更状态 / 申请恢复合作 / 绩效客观事实录入"中除"提交准入"= SUBMIT 外均无独立审计码，
+ * MVP 维持后端 AuditAction 11 码（业务 7 + 用户域 4，权威源 AuditAction.java + docs/api-spec.md §0/§5），
+ * 前端不发明占位码、不按不存在的码筛选；扩展码（曾建议 CREATE / UPDATE / DELETE_DRAFT / APPLY_LIFECYCLE）归二期落地。
  */
