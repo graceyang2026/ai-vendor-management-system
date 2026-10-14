@@ -15,6 +15,7 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -43,6 +44,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *   每行携带 version（§2.3 取值链）与 expired（expiry_date &lt; 今天 同表派生）；
  *   他人私有在途区 40302、供应商不存在 40401
  * - DDL 等价性：uk_supplier_approved_doc 生成列唯一约束在 H2 真实生效（§2.3 竞态 DB 兜底的基础）
+ * - §1.7 同类型在途顶替（裁决 20261015）：真库实证 delete(wrapper) 是 UPDATE deleted=1 而非物理 DELETE
+ *   （JdbcTemplate 绕过 @TableLogic 直查物理列），且 APPROVED/REJECTED/跨 doc_type 免疫、校验失败不顶旧件
  */
 @SpringBootTest(properties = "srm.seed-demo-users=true")
 @AutoConfigureMockMvc
@@ -62,6 +65,9 @@ class QualificationIntegrationTest {
 
     @Autowired
     private UserMapper userMapper;
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
 
     @Autowired
     private PasswordEncoder passwordEncoder;
@@ -497,6 +503,111 @@ class QualificationIntegrationTest {
                 new LambdaQueryWrapper<SupplierQualification>()
                         .eq(SupplierQualification::getSupplierId, supplier.getId()));
         assertThat(rows).hasSize(3);
+    }
+
+    // ==================== §1.7 同类型在途顶替（裁决 20261015，契约 §1.7 业务约束新增行） ====================
+
+    /** 经 §1.7 上传一份证照并回传新行 id */
+    private long uploadQualAndGetId(String token, long supplierId, String docType, String fileUrl) throws Exception {
+        String resp = mockMvc.perform(post("/api/v1/suppliers/" + supplierId + "/qualifications")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(qualBody(docType, fileUrl, "2026-01-01", "2028-12-31")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andReturn().getResponse().getContentAsString();
+        return objectMapper.readTree(resp).get("data").get("id").asLong();
+    }
+
+    /** 绕过 @TableLogic 直查物理行：顶替必须是 UPDATE deleted=1（可查），行必须还在（非物理 DELETE） */
+    private int deletedOf(long qualificationId) {
+        Integer deleted = jdbcTemplate.queryForObject(
+                "SELECT deleted FROM supplier_qualification WHERE id = ?", Integer.class, qualificationId);
+        assertThat(deleted).isNotNull();
+        return deleted;
+    }
+
+    @Test
+    void resubmitSameDocTypeLogicallyReplacesOldPendingRow() throws Exception {
+        // Red①：同 supplier + 同 doc_type 的旧 PENDING 被顶（deleted=1 物理保留），新行 PENDING/version=1，
+        // 被顶旧件经 @TableLogic 自动从 §1.8 隐身
+        String token = loginToken("staff01", "Staff@123");
+        long supplierId = createSupplierViaApi(token, "在途顶替试验场");
+
+        long oldId = uploadQualAndGetId(token, supplierId, "BUSINESS_LICENSE", "/uploads/2026/10/bl-old.pdf");
+        long newId = uploadQualAndGetId(token, supplierId, "BUSINESS_LICENSE", "/uploads/2026/10/bl-new.pdf");
+
+        assertThat(deletedOf(oldId)).isEqualTo(1);
+        assertThat(deletedOf(newId)).isZero();
+
+        JsonNode data = objectMapper.readTree(listAsString(token, supplierId)).get("data");
+        assertThat(data).hasSize(1);
+        assertThat(data.get(0).get("id").asLong()).isEqualTo(newId);
+        assertThat(data.get(0).get("status").asText()).isEqualTo("PENDING");
+        assertThat(data.get(0).get("version").asInt()).isEqualTo(1);
+        // MP 逻辑视图同样只见新行（@TableLogic 对 selectList 自动追加 deleted=0）
+        assertThat(qualificationMapper.selectCount(new LambdaQueryWrapper<SupplierQualification>()
+                .eq(SupplierQualification::getSupplierId, supplierId))).isEqualTo(1L);
+    }
+
+    @Test
+    void resubmitDoesNotTouchApprovedOrRejectedRows() throws Exception {
+        // Red②：批复产出的 APPROVED/REJECTED 行不在顶替匹配集内（delete wrapper 三 eq 只命中 PENDING）
+        String token = loginToken("staff01", "Staff@123");
+        long supplierId = createSupplierViaApi(token, "批复态免疫试验场");
+        flipSupplierStatus(supplierId, "NORMAL");
+        SupplierQualification approved = seedQual(supplierId, "APPROVED", "BUSINESS_LICENSE",
+                LocalDate.of(2026, 1, 1), LocalDate.of(2029, 1, 1));
+        SupplierQualification rejected = seedQual(supplierId, "REJECTED", "BUSINESS_LICENSE",
+                LocalDate.of(2020, 1, 1), LocalDate.of(2025, 1, 1));
+
+        uploadQualAndGetId(token, supplierId, "BUSINESS_LICENSE", "/uploads/2026/10/bl-renew.pdf");
+
+        assertThat(deletedOf(approved.getId())).isZero();
+        assertThat(deletedOf(rejected.getId())).isZero();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT status FROM supplier_qualification WHERE id = ?", String.class, approved.getId()))
+                .isEqualTo("APPROVED");
+    }
+
+    @Test
+    void failedUploadDoesNotReplaceExistingPendingRow() throws Exception {
+        // Red③：校验失败（40001 日期语义 / 40302 状态门槛）都发生在顶替步骤之前——旧 PENDING 必须原样在途
+        String token = loginToken("staff01", "Staff@123");
+        long supplierId = createSupplierViaApi(token, "校验失败保旧件试验场");
+        long oldId = uploadQualAndGetId(token, supplierId, "OTHER", "/uploads/2026/10/keep.pdf");
+
+        mockMvc.perform(post("/api/v1/suppliers/" + supplierId + "/qualifications")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(qualBody("OTHER", "/uploads/2026/10/bad.pdf", "2028-12-31", "2026-01-01")))
+                .andExpect(jsonPath("$.code").value(40001));
+        assertThat(deletedOf(oldId)).isZero();
+
+        flipSupplierStatus(supplierId, "PENDING_REVIEW");
+        mockMvc.perform(post("/api/v1/suppliers/" + supplierId + "/qualifications")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(qualBody("OTHER", "/uploads/2026/10/gated.pdf", "2026-01-01", "2028-12-31")))
+                .andExpect(jsonPath("$.code").value(40302));
+        assertThat(deletedOf(oldId)).isZero();
+        // 逻辑视图旧件仍可见（未被顶掉）
+        assertThat(qualificationMapper.selectById(oldId)).isNotNull();
+    }
+
+    @Test
+    void resubmitBusinessLicenseLeavesOtherDocTypePendingIntact() throws Exception {
+        // Red④：顶替严格按 doc_type 划界——OTHER 在途件不受 BUSINESS_LICENSE 重提交影响
+        String token = loginToken("staff01", "Staff@123");
+        long supplierId = createSupplierViaApi(token, "跨类型不误伤试验场");
+        long blId = uploadQualAndGetId(token, supplierId, "BUSINESS_LICENSE", "/uploads/2026/10/bl1.pdf");
+        long otherId = uploadQualAndGetId(token, supplierId, "OTHER", "/uploads/2026/10/other1.pdf");
+
+        long blRenewId = uploadQualAndGetId(token, supplierId, "BUSINESS_LICENSE", "/uploads/2026/10/bl2.pdf");
+
+        assertThat(deletedOf(blId)).isEqualTo(1);
+        assertThat(deletedOf(blRenewId)).isZero();
+        assertThat(deletedOf(otherId)).isZero();
     }
 
     private long userId(String username) {

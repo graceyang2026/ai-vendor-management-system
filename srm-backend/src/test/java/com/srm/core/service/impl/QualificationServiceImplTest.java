@@ -21,6 +21,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -32,6 +33,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -51,6 +53,8 @@ import static org.mockito.Mockito.when;
  *    REJECTED 行排除条件<b>下推 SQL 且仅对非建档本人的 STAFF 追加</b>
  *    （契约"REJECTED 仅供本人追溯" × 裁决 AUDITOR/ADMIN 全量的组合口径，见类尾说明）。
  * 4. 每行携带 version（§2.3 入参取值链）与 expired；审核痕迹三列原样映射（本批恒 null）。
+ * 5. create 同类型在途顶替（裁决 20261015，契约 §1.7 业务约束新增行）：全部校验通过后、insert 前
+ *    先逻辑删除同 supplier + 同 doc_type 的旧 PENDING 行；校验失败路径绝不触达顶替（delete 不得被调用）。
  *
  * 单元层只能锁定"wrapper 是否追加了 status 排除条件"这一<b>决策</b>；
  * 真实行过滤结果由 QualificationIntegrationTest 在 H2 上端到端锁定。
@@ -378,6 +382,76 @@ class QualificationServiceImplTest {
         req.setExpiryDate("2025-01-01");
 
         assertThat(service.create(1001L, req).getExpired()).isTrue();
+    }
+
+    // ==================== §1.7 create：同类型在途顶替（裁决 20261015，契约 §1.7 业务约束） ====================
+
+    @Test
+    void createReplacesSameDocTypePendingRowBeforeInsert() {
+        // 顶替判序不可逆：delete(旧同类型 PENDING) 严格先于 insert(新行)；
+        // @TableLogic 下 BaseMapper.delete(wrapper) 即 UPDATE deleted=1（物理行保留），集成层在真库上实证
+        when(currentUserProvider.require()).thenReturn(staffOwner());
+        when(supplierMapper.selectById(1001L)).thenReturn(supplier(1001L, "NORMAL", 2L));
+        when(qualificationMapper.insert(any(SupplierQualification.class))).thenAnswer(inv -> {
+            inv.getArgument(0, SupplierQualification.class).setId(505L);
+            return 1;
+        });
+
+        service.create(1001L, validRequest());
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<LambdaQueryWrapper<SupplierQualification>> captor =
+                ArgumentCaptor.forClass(LambdaQueryWrapper.class);
+        InOrder inOrder = inOrder(qualificationMapper);
+        inOrder.verify(qualificationMapper).delete(captor.capture());
+        inOrder.verify(qualificationMapper).insert(any(SupplierQualification.class));
+
+        LambdaQueryWrapper<SupplierQualification> wrapper = captor.getValue();
+        String sql = wrapper.getSqlSegment(); // 触发惰性物化（照 list 侧实测范式）
+        assertThat(sql).contains("supplier_id");
+        assertThat(sql).contains("doc_type");
+        assertThat(sql).contains("status");
+        // 三 eq 参数钉死：本供应商 + 请求 doc_type + 仅 PENDING——APPROVED/REJECTED 不在匹配集内
+        assertThat(wrapper.getParamNameValuePairs().values())
+                .containsExactlyInAnyOrder(1001L, "BUSINESS_LICENSE", "PENDING");
+    }
+
+    @Test
+    void createDoesNotReplaceWhenDateSemanticsInvalid() {
+        // 40001（日期语义）必须先于顶替失败：坏报文绝不损毁旧在途件
+        when(currentUserProvider.require()).thenReturn(staffOwner());
+        when(supplierMapper.selectById(1001L)).thenReturn(supplier(1001L, "DRAFT", 2L));
+
+        QualificationCreateRequest reversed = validRequest();
+        reversed.setEffectiveDate("2028-12-31");
+        reversed.setExpiryDate("2026-01-01");
+        assertThatThrownBy(() -> service.create(1001L, reversed))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.getCode()).isEqualTo(ErrorCode.VALIDATION_FAILED));
+
+        verify(qualificationMapper, never()).delete(any());
+        verify(qualificationMapper, never()).insert(any(SupplierQualification.class));
+    }
+
+    @Test
+    void createDoesNotReplaceWhenStatusGateOrOwnershipRejects() {
+        // 40302（状态门槛）同样必须先于顶替失败；归属拒绝的 never-delete 由
+        // createOnOthersSupplierChecksSelfBeforeStatusGateThrows40302 + 本批 never() 语义共同兜底
+        when(currentUserProvider.require()).thenReturn(staffOwner());
+        when(supplierMapper.selectById(1001L)).thenReturn(supplier(1001L, "PENDING_REVIEW", 2L));
+        assertThatThrownBy(() -> service.create(1001L, validRequest()))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        ex -> assertThat(ex.getCode()).isEqualTo(ErrorCode.STATUS_NOT_ALLOWED));
+
+        when(supplierMapper.selectById(1001L)).thenReturn(supplier(1001L, "NORMAL", 9L));
+        assertThatThrownBy(() -> service.create(1001L, validRequest()))
+                .isInstanceOfSatisfying(BusinessException.class, ex -> {
+                    assertThat(ex.getCode()).isEqualTo(ErrorCode.STATUS_NOT_ALLOWED);
+                    assertThat(ex.getMessage()).isEqualTo(MSG_NOT_SELF);
+                });
+
+        verify(qualificationMapper, never()).delete(any());
+        verify(qualificationMapper, never()).insert(any(SupplierQualification.class));
     }
 
     // ==================== §1.8 list：隔离判据与 REJECTED 排除决策 ====================

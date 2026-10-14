@@ -11,5 +11,9 @@ srm-frontend/node_modules/
 srm-frontend/dist/
 srm-frontend/.vite/
 
+# uploads (MVP 本地文件存储根，用户裁决 20261014)
+/uploads/
+srm-backend/uploads/
+
 # secrets
 .env

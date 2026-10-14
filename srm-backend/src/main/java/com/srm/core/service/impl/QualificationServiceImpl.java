@@ -34,6 +34,13 @@ import java.util.stream.Collectors;
  * "先归属后状态"是刻意的：他人档案即便状态合法也不该走到状态闸门，更不该泄露"该状态是否允许上传"。
  * 新记录一律 status=PENDING、version=1（裁决 20261012：上传不等于生效，生效只能由 §2.2/§2.3 批复）。
  *
+ * 同类型在途顶替（裁决 20261015，契约 §1.7 业务约束新增行）：本接口事务内，全部校验通过后、插入新行前，
+ * 先逻辑删除该供应商名下同 {@code doc_type} 的旧 {@code PENDING} 行——{@code @TableLogic} 下
+ * {@code BaseMapper.delete(wrapper)} 编译为 {@code UPDATE deleted=1}（物理行保留可查，非物理 DELETE），
+ * 即"同类型待审资质仅一条，新提交顶替旧件"。边界：仅 {@code PENDING} 被顶，{@code APPROVED}/{@code REJECTED}
+ * 不受影响（delete 条件三 eq 精确划界）；顶替与 insert 同一 {@code @Transactional}，任何校验失败先于顶替
+ * 抛出，旧在途件分毫无损；被顶旧件经 {@code @TableLogic} 自动从 §1.8 隐身，前端不提供独立删除入口。
+ *
  * §1.8 可见性（契约"默认 APPROVED+PENDING、REJECTED 仅建档本人追溯"× 裁决 2026-10-14 晚
  * "AUDITOR 不受 §0 规则 A 约束"的组合口径）：
  * - 规则 A 私有在途区闸门只卡 STAFF（AUDITOR/ADMIN 全量，含他人 DRAFT/RETURNED）；
@@ -93,6 +100,14 @@ public class QualificationServiceImpl implements QualificationService {
         LocalDate effectiveDate = requireDate(request.getEffectiveDate());
         LocalDate expiryDate = requireDate(request.getExpiryDate());
         requireDateOrder(effectiveDate, expiryDate);
+
+        // 同类型在途顶替（裁决 20261015）：必须位于全部校验之后、insert 之前——判序由单测+集成三层锁定；
+        // @TableLogic 使本步为 UPDATE deleted=1（H2 集成层绕过逻辑删除直查物理列实证），且与下方 insert
+        // 同处本方法 @Transactional，异常路径整体回滚，校验失败绝不顶掉旧件
+        qualificationMapper.delete(new LambdaQueryWrapper<SupplierQualification>()
+                .eq(SupplierQualification::getSupplierId, supplier.getId())
+                .eq(SupplierQualification::getDocType, request.getDocType())
+                .eq(SupplierQualification::getStatus, QUAL_PENDING));
 
         SupplierQualification qualification = new SupplierQualification();
         qualification.setSupplierId(supplier.getId());

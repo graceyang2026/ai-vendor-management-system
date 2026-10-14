@@ -14,7 +14,7 @@ import { ApiError } from '@/utils/request'
 import { ERROR_CODE } from '@/constants/errorCode'
 import {
   ENTITY_TYPE,
-  QUALIFICATION_DOC_TYPE_OPTIONS,
+  QUALIFICATION_DOC_TYPE,
   SUPPLIER_STATUS,
   formatCreatedAt,
   getQualificationDocTypeLabel,
@@ -33,7 +33,6 @@ import {
 } from '@/constants/qualificationValidation'
 import type {
   QualificationCreateRequest,
-  QualificationDocTypeCode,
   QualificationItem,
 } from '@/types/qualification'
 
@@ -45,6 +44,13 @@ import type {
  * el-upload 列表状态 + 回调呈现，成功回显后端 file_name），表单提交时把该 file_url 随
  * §1.7 QualificationCreateRequest 一并提交；§1.7 成功后刷新 §1.8 列表，
  * 新行初始 status=PENDING 经字典显「资质待审」类标签（裁决 20261012：上传不等于生效）。
+ *
+ * 证照类型隐藏（任务卡 F4，用户拍板 20261015）：需求文档证照类型仅营业执照一种，
+ * 弹窗不再渲染类型选择项，提交报文固定 doc_type=BUSINESS_LICENSE——§1.7 契约报文形态不变
+ * （doc_type 仍必填，码值权威源 auditDictionary.QUALIFICATION_DOC_TYPE，后端
+ * QualificationValidationPatterns.DOC_TYPE_REGEX 两码仍会校验）。后端 B4"同类型在途顶替"
+ * 已落地：重复提交待审营业执照顶替旧待审行，前端零新增逻辑，提交成功后 loadList() 刷新
+ * 自然只显一条待审。§1.8 列表"证照类型"展示列与 getQualificationDocTypeLabel 字典保留。
  *
  * 按钮显隐"双维度判断"（体验层，非安全边界）：
  * - 维度一 角色：上传资质入口仅 STAFF 渲染（§1.7 STAFF 专属，后端 40301 兜底）；
@@ -139,15 +145,16 @@ function openFileUrl(fileUrl: string) {
 
 /* ---------------------------------------------------------------- §1.6+§1.7 上传弹窗 */
 
-/** 弹窗表单 UI 模型（非契约对象）：file_url 不在表单里手填，只能经 §1.6 上传成功后注入 */
+/**
+ * 弹窗表单 UI 模型（非契约对象）：file_url 不在表单里手填，只能经 §1.6 上传成功后注入；
+ * doc_type 不入表单（F4 隐藏类型选择，提交时由 buildCreatePayload 固定 BUSINESS_LICENSE）。
+ */
 interface QualificationUploadForm {
-  doc_type: QualificationDocTypeCode | ''
   effective_date: string
   expiry_date: string
 }
 
 const EMPTY_FORM: QualificationUploadForm = {
-  doc_type: '',
   effective_date: '',
   expiry_date: '',
 }
@@ -163,7 +170,12 @@ const uploadRef = ref<UploadInstance>()
 const uploadedFileUrl = ref('')
 const uploadedFileName = ref('')
 
-/** 服务端/本地业务错误逐字段展示（同 SupplierListView 惯例：el-form-item :error 绑定） */
+/**
+ * 服务端/本地业务错误逐字段展示（同 SupplierListView 惯例：el-form-item :error 绑定）。
+ * QualificationErrorField 仍含 'doc_type'（constants/qualificationValidation.ts 为后端 40001
+ * 反查唯一映射链，不可断）：后端若回 DOC_TYPE_MSG，ElMessage 直显文案兜底，逐字段挂载因
+ * 表单项已移除而无渲染位，信息不丢失。
+ */
 const serverErrors = reactive<Partial<Record<QualificationErrorField, string>>>({})
 
 function setServerError(field: QualificationErrorField, message: string) {
@@ -179,9 +191,6 @@ function clearServerErrors() {
 
 /** 校验规则与后端 QualificationValidationPatterns 逐字同源（constants/qualificationValidation.ts） */
 const formRules: FormRules<QualificationUploadForm> = {
-  doc_type: [
-    { required: true, message: QUALIFICATION_VALIDATION.DOC_TYPE_MSG, trigger: 'change' },
-  ],
   effective_date: [
     { required: true, message: QUALIFICATION_VALIDATION.DATE_MSG, trigger: 'change' },
     { pattern: QUALIFICATION_VALIDATION.DATE_REGEX, message: QUALIFICATION_VALIDATION.DATE_MSG, trigger: 'change' },
@@ -244,14 +253,20 @@ function handleFileUpload(options: UploadRequestOptions): Promise<unknown> {
   uploading.value = true
   uploadedFileUrl.value = ''
   uploadedFileName.value = ''
-  return uploadFileApi(options.file).then((res) => {
-    if (res.data) {
-      uploadedFileUrl.value = res.data.file_url
-      // 上传成功回显后端 file_name（原始文件名；落盘名是 UUID，回显仅体验层）
-      uploadedFileName.value = res.data.file_name
-    }
-    return res.data
-  })
+  return uploadFileApi(options.file)
+    .then((res) => {
+      if (res.data) {
+        uploadedFileUrl.value = res.data.file_url
+        // 上传成功回显后端 file_name（原始文件名；落盘名是 UUID，回显仅体验层）
+        uploadedFileName.value = res.data.file_name
+      }
+      return res.data
+    })
+    // FE-F3 修复：成功 / reject（拦截器抛 ApiError 走 on-error）统一在此复位 uploading，
+    // 否则上传按钮永久 loading、提交送审按钮永久 disabled；closeUploadDialog 的复位保留作兜底
+    .finally(() => {
+      uploading.value = false
+    })
 }
 
 // EP on-error 实参为 UploadAjaxError extends Error（element-plus/es/components/upload/src/ajax.d.ts，根入口未导出该类型名，
@@ -268,9 +283,15 @@ function handleFileRemove() {
   uploadedFileName.value = ''
 }
 
+/**
+ * §1.7 提交报文（4 字段契约形态不变）。doc_type 固定 BUSINESS_LICENSE（F4，用户拍板 20261015：
+ * 需求证照类型仅营业执照一种，前端隐藏选择项）；码值取字典权威源
+ * auditDictionary.QUALIFICATION_DOC_TYPE（后端 QualificationValidationPatterns.DOC_TYPE_REGEX
+ * 两码之一），不在组件内硬编码字符串，QualificationCreateRequest 类型定义不动。
+ */
 function buildCreatePayload(): QualificationCreateRequest {
   return {
-    doc_type: formModel.doc_type as QualificationDocTypeCode,
+    doc_type: QUALIFICATION_DOC_TYPE.BUSINESS_LICENSE,
     file_url: uploadedFileUrl.value,
     effective_date: formModel.effective_date,
     expiry_date: formModel.expiry_date,
@@ -285,11 +306,6 @@ async function handleSubmit() {
     await formEl.validate()
   } catch {
     return // 本地校验未过，错误已展示
-  }
-  const docType = formModel.doc_type
-  if (!docType) {
-    setServerError('doc_type', QUALIFICATION_VALIDATION.DOC_TYPE_MSG)
-    return
   }
   if (!uploadedFileUrl.value) {
     // 与后端 FileUploadConstraints.MESSAGE_FILE_MISSING 同文案（file part 缺失在后端即 40001）
@@ -387,27 +403,16 @@ function handleSubmitError(err: unknown) {
     </el-table>
     <el-empty v-if="!loading && items.length === 0" description="该供应商暂无资质记录" :image-size="60" />
 
-    <!-- §1.6+§1.7 上传资质弹窗 -->
+    <!-- §1.6+§1.7 上传资质弹窗（F4：不再提供证照类型选择项，提交固定按营业执照） -->
     <el-dialog v-model="dialogVisible" title="上传资质（提交后进入待审）" width="560px">
       <el-alert
         type="info"
         show-icon
         :closable="false"
         style="margin-bottom: 16px"
-        title="文件先传 §1.6 换 file_url（pdf/jpg/jpeg/png、不超过 10MB），成功后提交资质表单；新记录一律待审，生效由审核批复。"
+        title="文件先传 §1.6 换 file_url（pdf/jpg/jpeg/png、不超过 10MB），成功后提交资质表单；新记录一律待审，生效由审核批复。证照类型默认按营业执照提交。"
       />
       <el-form ref="formRef" :model="formModel" :rules="formRules" label-width="110px">
-        <el-form-item label="证照类型" prop="doc_type" :error="serverErrors.doc_type">
-          <!-- 传码显中文：提交 doc_type 码，展示字典中文（BUSINESS_LICENSE/OTHER 两码） -->
-          <el-select v-model="formModel.doc_type" placeholder="请选择（仅认两码）" style="width: 100%">
-            <el-option
-              v-for="opt in QUALIFICATION_DOC_TYPE_OPTIONS"
-              :key="opt.value"
-              :label="opt.label"
-              :value="opt.value"
-            />
-          </el-select>
-        </el-form-item>
         <el-form-item label="证照生效日" prop="effective_date" :error="serverErrors.effective_date">
           <el-date-picker
             v-model="formModel.effective_date"
