@@ -9,7 +9,7 @@ import ReviewHistoryLogTable from '@/components/audit/ReviewHistoryLogTable.vue'
 import QualificationPanel from '@/components/business/QualificationPanel.vue'
 import LifecycleDecisionDialog from '@/components/business/LifecycleDecisionDialog.vue'
 import { auditSupplierApi, getSupplierDetailApi, getSupplierListApi } from '@/api/supplier'
-import { getLifecycleRequestListApi } from '@/api/lifecycle'
+import { getLifecycleTodoApi } from '@/api/lifecycle'
 import { ApiError } from '@/utils/request'
 import { ERROR_CODE } from '@/constants/errorCode'
 import { MODULE2_VALIDATION, SUPPLIER_LOCK_CONFLICT_MSG } from '@/constants/supplierValidation'
@@ -18,9 +18,13 @@ import {
   DECISION,
   ENTITY_TYPE,
   LIFECYCLE_REQUEST_STATUS,
+  LIFECYCLE_REQUEST_STATUS_OPTIONS,
   LIFECYCLE_REQUEST_TYPE,
+  LIFECYCLE_REQUEST_TYPE_OPTIONS,
   SUPPLIER_STATUS,
   SUPPLIER_STATUS_OPTIONS,
+  NULL_FIELD_PLACEHOLDER,
+  SUPPLIER_PROFILE_MISSING_LABEL,
   formatCreatedAt,
   getLifecycleTargetStatusLabel,
   getLifecycleTypeLabel,
@@ -28,10 +32,16 @@ import {
   getStatusTagType,
   getSupplierTypeLabel,
   type DecisionCode,
+  type LifecycleRequestStatusCode,
+  type LifecycleRequestTypeCode,
   type SupplierStatusCode,
 } from '@/constants/auditLogView'
 import type { SupplierAuditDecisionRequest, SupplierItem, SupplierListQuery } from '@/types/supplier'
-import type { LifecycleRequestResponse, LifecycleRequestRow } from '@/types/lifecycle'
+import type {
+  LifecycleRequestResponse,
+  LifecycleRequestTodoItem,
+  LifecycleRequestTodoQuery,
+} from '@/types/lifecycle'
 
 /**
  * 审计与合规控制台（UI 参照 docs/mockups/原型展示-审核员v1.1_待评审20260917.html，
@@ -50,7 +60,8 @@ import type { LifecycleRequestResponse, LifecycleRequestRow } from '@/types/life
  * - 审核详情：§1.4 GET /suppliers/{id}（签署所需 version 的唯一来源）+ §1.8 资质区（复用 QualificationPanel）
  * - 准入签署：§2.2 POST /suppliers/{id}/audit body {version, decision, comment}
  * - 存续期资质单独审批：§2.3 PUT /qualifications/{id}/review（在 QualificationPanel 内，仅 NORMAL 供应商）
- * - 停用/淘汰终审：§2.5 GET /suppliers/{id}/lifecycle-requests（申请单 version 唯一来源）
+ * - 停用/淘汰终审：§2.7 GET /lifecycle-requests（跨供应商终审待办队列，PageResult 分页 +
+ *   supplier_name/supplier_status 冗余两列；行内 version 与 §2.5 同为 §2.6 入参 version 的合法取值源）
  *   + §2.6 POST /lifecycle-requests/{id}/decision body {decision, comment, version}
  * 绩效评价复核 / 操作与审批日志不在本轮范围（前者属模块三，后者沿用日志视图）。
  */
@@ -265,146 +276,115 @@ function handleSignError(err: unknown) {
   showRequestError(err)
 }
 
-/* ================================================================ F2 · 停用/淘汰终审决策（§2.5 / §2.6） */
+/* ================================================================ F2 · 停用/淘汰终审决策（§2.7 待办队列 + §2.6 终审） */
 
 /**
- * §1.3 扫描参数：后端 SupplierController.MAX_PAGE_SIZE=100，故每页 100；
- * 最多扫 SCAN_MAX_PAGES 页，超出部分如实提示（MVP 数据量下不会触顶，触顶即说明需要后端补聚合端点）。
+ * 待办队列唯一数据源：§2.7 GET /lifecycle-requests（跨供应商聚合，仅 AUDITOR，非 AUDITOR 服务端 40301）。
+ * 分页（page/page_size/total）、`applied_at` 倒序、以及 supplier_name / supplier_status 冗余两列
+ * 全部由后端负责：本页**单次调用**取数，不再扫描 §1.3 供应商档案、不再逐供应商回查 §2.5
+ * （原「逐供应商循环回查」过渡实现连同其批大小/限并发/截断提示参数已随该端点落地整体删除）。
+ * page_size 契约默认 20、**上限 100**（超出由后端按 §1.3 收敛口径折 100，不报错），故分页档位封顶 100。
  */
-const SCAN_PAGE_SIZE = 100
-const SCAN_MAX_PAGES = 5
-/** §2.5 按供应商逐个查询，fan-out 时按此批大小限并发，避免瞬时打满后端连接 */
-const SCAN_CONCURRENCY = 6
-
-/**
- * 可能挂有生命周期申请单的供应商状态集（§2.4 类型-状态门槛的反向推导：
- * 建单只可能发生在 NORMAL/SUSPENDED，淘汰后终态 ELIMINATED 仍保留已决历史，
- * DRAFT/PENDING_REVIEW/RETURNED 按门槛不可能有申请单，故不扫描）。
- * 用途仅是缩小前端扫描范围（体验/性能），不构成状态机判定。
- */
-const LIFECYCLE_CANDIDATE_STATUS: SupplierStatusCode[] = [
-  SUPPLIER_STATUS.NORMAL,
-  SUPPLIER_STATUS.SUSPENDED,
-  SUPPLIER_STATUS.ELIMINATED,
-]
+const DECISION_PAGE_SIZE_MAX = 100
 
 const decisionLoading = ref(false)
-const decisionRows = ref<LifecycleRequestRow[]>([])
-const decisionOnlyPending = ref(true)
-const decisionKeyword = ref('')
-const scanTruncated = ref(false)
-
-const pendingCount = computed(
-  () => decisionRows.value.filter((row) => row.request.status === LIFECYCLE_REQUEST_STATUS.PENDING).length,
-)
-
-const filteredDecisionRows = computed(() => {
-  const keyword = decisionKeyword.value.trim()
-  return decisionRows.value.filter((row) => {
-    if (decisionOnlyPending.value && row.request.status !== LIFECYCLE_REQUEST_STATUS.PENDING) return false
-    if (!keyword) return true
-    return (
-      row.supplier_name.includes(keyword) ||
-      row.request.reason.includes(keyword) ||
-      row.request.applied_by_name.includes(keyword)
-    )
-  })
+const decisionRows = ref<LifecycleRequestTodoItem[]>([])
+/** §2.7 PageResult.total：当前筛选条件下的**全量**件数（不是本页行数） */
+const decisionTotal = ref(0)
+const decisionQuery = reactive({
+  // 工作台默认聚焦"待终审"（本页存在意义）；status/type 一律传后端枚举码，空值 = 不过滤（契约 §2.7 缺省口径）
+  status: LIFECYCLE_REQUEST_STATUS.PENDING as LifecycleRequestStatusCode | '',
+  type: '' as LifecycleRequestTypeCode | '',
+  page: 1,
+  page_size: 20,
 })
 
-/** 行是否可终审（status=PENDING；已决件只读，任务卡 F2.4）。 */
-function canDecide(row: LifecycleRequestRow): boolean {
-  return row.request.status === LIFECYCLE_REQUEST_STATUS.PENDING
-}
-
-/** 该 SUSPENDED 供应商是否有在途恢复申请（业务员侧同类型重复提交会撞 40902，故显式标注）。 */
-function hasPendingResume(row: LifecycleRequestRow): boolean {
-  return (
-    row.supplier_status === SUPPLIER_STATUS.SUSPENDED &&
-    row.request.type === LIFECYCLE_REQUEST_TYPE.RESUME &&
-    row.request.status === LIFECYCLE_REQUEST_STATUS.PENDING
-  )
-}
-
 /**
- * 待决策区数据装配：§1.3 扫描候选供应商 → 逐个 §2.5 拉申请历史 → 拼成 LifecycleRequestRow。
- *
- * 契约缺口（已在会话留痕上报 tech-lead）：§2.5 只能按 supplier_id 查询，
- * 契约与 api-spec 均无"跨供应商生命周期申请列表"聚合端点，而审核员待决策工作台需要一张全量视图，
- * 故本轮以前端 fan-out 方式落地（限页 × 限并发）；后端补 GET /lifecycle-requests 列表接口后，
- * 本函数应整体替换为单次调用，扫描页大小/并发/截断提示等参数一并删除。
+ * 表头计数文案：直接取服务端 total，不拿本页行数凑（分页后页内计数≠待办总量）。
+ * 状态中文经 getStatusLabel + ENTITY_TYPE.LIFECYCLE_REQUEST 分流（同码值多域，须走生命周期口径）；
+ * 未选状态时 §2.7 不过滤，故显示"全部"。
  */
+const decisionSummaryLabel = computed(() => {
+  const scope = decisionQuery.status
+    ? getStatusLabel(decisionQuery.status, ENTITY_TYPE.LIFECYCLE_REQUEST)
+    : '全部'
+  return `${scope} ${decisionTotal.value} 件`
+})
+
 async function loadDecisionRows() {
   decisionLoading.value = true
-  scanTruncated.value = false
   try {
-    // 1) 扫描供应商档案（§1.3 分页，取服务端真值 status/version，不做任何本地推断）
-    const suppliers: SupplierItem[] = []
-    let scannedPages = 0
-    for (let page = 1; page <= SCAN_MAX_PAGES; page += 1) {
-      const res = await getSupplierListApi({ page, page_size: SCAN_PAGE_SIZE })
-      const list = res.data?.list ?? []
-      const totalCount = res.data?.total ?? 0
-      suppliers.push(...list)
-      scannedPages = page
-      if (list.length < SCAN_PAGE_SIZE || suppliers.length >= totalCount) break
-      if (page === SCAN_MAX_PAGES && suppliers.length < totalCount) scanTruncated.value = true
+    const params: LifecycleRequestTodoQuery = {
+      page: decisionQuery.page,
+      page_size: Math.min(decisionQuery.page_size, DECISION_PAGE_SIZE_MAX),
     }
-    const candidates = suppliers.filter((item) => LIFECYCLE_CANDIDATE_STATUS.includes(item.status))
-
-    // 2) 分批 fan-out §2.5（限并发；单个供应商失败不阻断整表，末尾如实汇总提示）
-    const rows: LifecycleRequestRow[] = []
-    const failures: string[] = []
-    for (let start = 0; start < candidates.length; start += SCAN_CONCURRENCY) {
-      const chunk = candidates.slice(start, start + SCAN_CONCURRENCY)
-      await Promise.all(
-        chunk.map(async (supplier) => {
-          try {
-            const res = await getLifecycleRequestListApi(supplier.id)
-            for (const request of res.data ?? []) {
-              rows.push({
-                supplier_id: supplier.id,
-                supplier_name: supplier.name,
-                supplier_status: supplier.status,
-                request,
-              })
-            }
-          } catch (err) {
-            if (err instanceof ApiError && err.code === ERROR_CODE.NOT_FOUND) return
-            failures.push(supplier.name)
-          }
-        }),
-      )
-    }
-
-    // 3) 排序：待终审优先，其次按申请时间倒序（§2.5 本身按时间倒序，聚合后需整体重排）
-    rows.sort((a, b) => {
-      const rankA = a.request.status === LIFECYCLE_REQUEST_STATUS.PENDING ? 0 : 1
-      const rankB = b.request.status === LIFECYCLE_REQUEST_STATUS.PENDING ? 0 : 1
-      if (rankA !== rankB) return rankA - rankB
-      return (b.request.applied_at ?? '').localeCompare(a.request.applied_at ?? '')
-    })
-    decisionRows.value = rows
-
-    if (failures.length > 0) {
-      ElMessage.warning(`${failures.length} 家供应商的申请历史拉取失败（${failures.slice(0, 3).join('、')} 等），请点击刷新重试`)
-    }
-    if (scanTruncated.value) {
-      ElMessage.warning(`供应商档案仅扫描了前 ${scannedPages * SCAN_PAGE_SIZE} 条，决策列表可能不完整（契约缺跨供应商聚合端点）`)
-    }
+    if (decisionQuery.status) params.status = decisionQuery.status
+    if (decisionQuery.type) params.type = decisionQuery.type
+    const res = await getLifecycleTodoApi(params)
+    decisionRows.value = res.data?.list ?? []
+    decisionTotal.value = res.data?.total ?? 0
   } catch (err) {
     decisionRows.value = []
+    decisionTotal.value = 0
     showRequestError(err)
   } finally {
     decisionLoading.value = false
   }
 }
 
+function handleDecisionSearch() {
+  decisionQuery.page = 1
+  void loadDecisionRows()
+}
+
+function handleDecisionReset() {
+  decisionQuery.status = LIFECYCLE_REQUEST_STATUS.PENDING
+  decisionQuery.type = ''
+  decisionQuery.page = 1
+  void loadDecisionRows()
+}
+
+function handleDecisionPageChange(page: number) {
+  decisionQuery.page = page
+  void loadDecisionRows()
+}
+
+function handleDecisionSizeChange(size: number) {
+  decisionQuery.page_size = Math.min(size, DECISION_PAGE_SIZE_MAX)
+  decisionQuery.page = 1
+  void loadDecisionRows()
+}
+
+/** 行是否可终审（status=PENDING；已决件只读，任务卡 F2.4）。 */
+function canDecide(row: LifecycleRequestTodoItem): boolean {
+  return row.status === LIFECYCLE_REQUEST_STATUS.PENDING
+}
+
+/** 该 SUSPENDED 供应商是否有在途恢复申请（业务员侧同类型重复提交会撞 40902，故显式标注）。 */
+function hasPendingResume(row: LifecycleRequestTodoItem): boolean {
+  return (
+    row.supplier_status === SUPPLIER_STATUS.SUSPENDED &&
+    row.type === LIFECYCLE_REQUEST_TYPE.RESUME &&
+    row.status === LIFECYCLE_REQUEST_STATUS.PENDING
+  )
+}
+
+/**
+ * §2.7 冗余供应商列空值判定：供应商已被逻辑删除（@TableLogic 隐身）或存在历史脏 FK 时，
+ * 后端批量反查 map miss 后把 supplier_name / supplier_status 折成 **null**（不是空串，也不裁剪申请单行，
+ * 源：LifecycleRequestServiceImpl#supplierBriefs + toTodoItem）。展示层据此显式标注"档案缺失"，
+ * 绝不 `|| ''` 折叠成"供应商存在"；空串是另一种形态（后端 name 非空约束，理论不出现），不混为一谈。
+ */
+function isSupplierProfileMissing(row: LifecycleRequestTodoItem): boolean {
+  return row.supplier_name === null || row.supplier_status === null
+}
+
 /* ---------------------------------------------------------------- §2.6 终审弹窗 */
 
 const decisionDialogVisible = ref(false)
-const decisionRow = ref<LifecycleRequestRow | null>(null)
+const decisionRow = ref<LifecycleRequestTodoItem | null>(null)
 
-function openDecisionDialog(row: LifecycleRequestRow) {
+function openDecisionDialog(row: LifecycleRequestTodoItem) {
   if (!canDecide(row)) {
     ElMessage.info('该申请单已决策，仅作只读追溯展示')
     return
@@ -414,8 +394,8 @@ function openDecisionDialog(row: LifecycleRequestRow) {
 }
 
 /**
- * §2.6 决策成功后（任务卡 F2.3）：重拉该供应商 §1.4 详情取新 SupplierResponse.version，
- * 供应商状态以服务端联动结果为准，前端绝不本地改写；随后重刷决策列表与准入列表（同视图数据源）。
+ * §2.6 决策成功后（任务卡 F2.3）：重拉该供应商 §1.4 详情取新 SupplierResponse.version 与最新状态，
+ * 供应商状态以服务端联动结果为准，前端绝不本地改写；随后重刷 §2.7 待办队列与准入列表（同视图数据源）。
  */
 async function handleDecided(request: LifecycleRequestResponse) {
   const supplierId = request.supplier_id
@@ -430,7 +410,7 @@ async function handleDecided(request: LifecycleRequestResponse) {
   await fetchAuditList()
 }
 
-/** 40901/40302/40401 后重拉申请历史换新 version（version 唯一取值链在 §2.5） */
+/** 40901/40302/40401 后重刷 §2.7 待办队列换新 version（行内 version 与 §2.5 同口径，皆为 §2.6 合法取值源） */
 async function handleDecisionRefresh() {
   await loadDecisionRows()
   await fetchAuditList()
@@ -659,12 +639,13 @@ async function loadDetailQuiet(supplierId: number) {
             </div>
           </template>
 
-          <!-- 3. 状态变更终审决策（§2.5 申请历史 + §2.6 终审；两步流程第二步，不提供直改状态旁路） -->
+          <!-- 3. 状态变更终审决策（§2.7 跨供应商待办队列 + §2.6 终审；两步流程第二步，不提供直改状态旁路） -->
           <template v-else-if="currentView === 'status-decision-list'">
             <div class="page-header">
               <span class="page-title">供应商停用 / 淘汰终审决策</span>
               <div class="header-actions">
-                <el-tag type="warning" size="small">待终审 {{ pendingCount }} 件</el-tag>
+                <!-- 计数取 §2.7 PageResult.total（全量真值），不拿本页行数凑 -->
+                <el-tag type="warning" size="small">{{ decisionSummaryLabel }}</el-tag>
                 <el-button type="primary" plain :loading="decisionLoading" @click="loadDecisionRows">刷新</el-button>
               </div>
             </div>
@@ -678,23 +659,56 @@ async function loadDetailQuiet(supplierId: number) {
             />
 
             <el-form :inline="true" class="filter-form">
-              <el-form-item label="关键词">
-                <el-input
-                  v-model="decisionKeyword"
-                  placeholder="供应商名称 / 申请人 / 申请理由"
-                  clearable
-                  style="width: 240px"
-                />
-              </el-form-item>
               <el-form-item label="申请单状态">
-                <el-switch v-model="decisionOnlyPending" active-text="仅看待终审" />
+                <!-- 传码显中文：value=LifecycleRequestStatus 码（§2.7 status 入参），label=字典中文；清空=不过滤 -->
+                <el-select
+                  v-model="decisionQuery.status"
+                  placeholder="全部状态"
+                  clearable
+                  style="width: 150px"
+                  @change="handleDecisionSearch"
+                >
+                  <el-option
+                    v-for="opt in LIFECYCLE_REQUEST_STATUS_OPTIONS"
+                    :key="opt.value"
+                    :label="opt.label"
+                    :value="opt.value"
+                  />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="申请类型">
+                <!-- 传码显中文：value=SUSPEND/RESUME/ELIMINATE（§2.7 type 入参，后端 TYPE_REGEX 校验，非法码值 40001） -->
+                <el-select
+                  v-model="decisionQuery.type"
+                  placeholder="全部类型"
+                  clearable
+                  style="width: 150px"
+                  @change="handleDecisionSearch"
+                >
+                  <el-option
+                    v-for="opt in LIFECYCLE_REQUEST_TYPE_OPTIONS"
+                    :key="opt.value"
+                    :label="opt.label"
+                    :value="opt.value"
+                  />
+                </el-select>
+              </el-form-item>
+              <el-form-item>
+                <el-button type="primary" @click="handleDecisionSearch">查询</el-button>
+                <el-button @click="handleDecisionReset">重置</el-button>
               </el-form-item>
             </el-form>
 
-            <el-table v-loading="decisionLoading" :data="filteredDecisionRows" border stripe style="width: 100%">
+            <el-table v-loading="decisionLoading" :data="decisionRows" border stripe style="width: 100%">
               <el-table-column label="目标供应商" min-width="180" show-overflow-tooltip>
                 <template #default="scope">
-                  {{ scope.row.supplier_name }}
+                  <!-- §2.7 冗余列 supplier_name：null（供应商已注销/脏 FK）显式占位并标注，绝不折空串伪装"供应商存在" -->
+                  <span
+                    v-if="isSupplierProfileMissing(scope.row)"
+                    class="supplier-missing"
+                    :title="SUPPLIER_PROFILE_MISSING_LABEL"
+                  >{{ NULL_FIELD_PLACEHOLDER }}</span>
+                  <span v-else>{{ scope.row.supplier_name }}</span>
                   <!-- SUSPENDED 供应商的在途恢复申请：同类型重复提交会撞 40902，显式标注提示 -->
                   <el-tag v-if="hasPendingResume(scope.row)" type="warning" effect="dark" size="small" style="margin-left: 5px">
                     在途恢复申请
@@ -703,48 +717,52 @@ async function loadDetailQuiet(supplierId: number) {
               </el-table-column>
               <el-table-column label="供应商当前状态" width="140">
                 <template #default="scope">
-                  <el-tag :type="getStatusTagType(scope.row.supplier_status)">
+                  <!-- supplier_status=当前合作状态（与"申请变更目标"是两个概念）；复用供应商域字典，null 走缺失占位 -->
+                  <el-tag v-if="scope.row.supplier_status !== null" :type="getStatusTagType(scope.row.supplier_status)">
                     {{ getStatusLabel(scope.row.supplier_status) }}
                   </el-tag>
+                  <span v-else class="supplier-missing" :title="SUPPLIER_PROFILE_MISSING_LABEL">
+                    {{ NULL_FIELD_PLACEHOLDER }}
+                  </span>
                 </template>
               </el-table-column>
               <el-table-column label="申请变更目标" width="180">
                 <template #default="scope">
                   <!-- 传码显中文：type 码 → 申请类型中文 + 批准后目标状态（目标态由后端联动，此处仅展示语义） -->
-                  {{ getLifecycleTypeLabel(scope.row.request.type) }}
+                  {{ getLifecycleTypeLabel(scope.row.type) }}
                   <span class="target-arrow">→</span>
-                  {{ getLifecycleTargetStatusLabel(scope.row.request.type) }}
+                  {{ getLifecycleTargetStatusLabel(scope.row.type) }}
                 </template>
               </el-table-column>
               <el-table-column label="申请人" width="110">
-                <template #default="scope">{{ scope.row.request.applied_by_name || '-' }}</template>
+                <template #default="scope">{{ scope.row.applied_by_name || '-' }}</template>
               </el-table-column>
               <el-table-column label="申请时间" width="160">
-                <template #default="scope">{{ formatCreatedAt(scope.row.request.applied_at) }}</template>
+                <template #default="scope">{{ formatCreatedAt(scope.row.applied_at) }}</template>
               </el-table-column>
               <el-table-column label="申请原因" min-width="180" show-overflow-tooltip>
-                <template #default="scope">{{ scope.row.request.reason }}</template>
+                <template #default="scope">{{ scope.row.reason }}</template>
               </el-table-column>
               <el-table-column label="申请单状态" width="110">
                 <template #default="scope">
                   <!-- 同码值多域：生命周期域中文必须经 entity_type 分流（待终审/已批准/已驳回） -->
-                  <el-tag size="small" :type="getStatusTagType(scope.row.request.status)">
-                    {{ getStatusLabel(scope.row.request.status, ENTITY_TYPE.LIFECYCLE_REQUEST) }}
+                  <el-tag size="small" :type="getStatusTagType(scope.row.status)">
+                    {{ getStatusLabel(scope.row.status, ENTITY_TYPE.LIFECYCLE_REQUEST) }}
                   </el-tag>
                 </template>
               </el-table-column>
               <el-table-column label="终审留痕（已决只读）" min-width="200">
                 <template #default="scope">
                   <div v-if="!canDecide(scope.row)" class="decided-cell">
-                    <div>{{ scope.row.request.decided_by_name || '-' }} · {{ formatCreatedAt(scope.row.request.decided_at) }}</div>
-                    <div class="decided-comment">{{ scope.row.request.decision_comment || '（决策意见未填写）' }}</div>
+                    <div>{{ scope.row.decided_by_name || '-' }} · {{ formatCreatedAt(scope.row.decided_at) }}</div>
+                    <div class="decided-comment">{{ scope.row.decision_comment || '（决策意见未填写）' }}</div>
                   </div>
                   <span v-else>—</span>
                 </template>
               </el-table-column>
               <el-table-column label="终审决策" width="120" fixed="right">
                 <template #default="scope">
-                  <!-- 已决件（status≠PENDING）不提供决策入口（任务卡 F2.4） -->
+                  <!-- 已决件（status≠PENDING）不提供决策入口（任务卡 F2.4）；角色维度由路由守卫 + 服务端 40301 兜底 -->
                   <el-button
                     v-if="canDecide(scope.row)"
                     size="small"
@@ -757,7 +775,17 @@ async function loadDetailQuiet(supplierId: number) {
                 </template>
               </el-table-column>
             </el-table>
-            <el-empty v-if="!decisionLoading && filteredDecisionRows.length === 0" description="暂无符合条件的生命周期申请单" :image-size="60" />
+            <el-pagination
+              style="margin-top: 16px; justify-content: flex-end"
+              :current-page="decisionQuery.page"
+              :page-size="decisionQuery.page_size"
+              :page-sizes="[10, 20, 50, 100]"
+              :total="decisionTotal"
+              layout="total, sizes, prev, pager, next"
+              @current-change="handleDecisionPageChange"
+              @size-change="handleDecisionSizeChange"
+            />
+            <el-empty v-if="!decisionLoading && decisionRows.length === 0" description="暂无符合条件的生命周期申请单" :image-size="60" />
           </template>
 
           <!-- 4. 绩效评价复核（属模块三，本轮占位） -->
@@ -792,7 +820,7 @@ async function loadDetailQuiet(supplierId: number) {
       </template>
     </el-dialog>
 
-    <!-- §2.6 终审决策弹窗（version 取 §2.5 申请单现值；成功后父级重拉 §1.4 + §2.5） -->
+    <!-- §2.6 终审决策弹窗（version 取 §2.7 待办队列行内现值；成功后父级重拉 §1.4 + §2.7） -->
     <LifecycleDecisionDialog
       v-model="decisionDialogVisible"
       :row="decisionRow"
@@ -905,5 +933,10 @@ async function loadDetailQuiet(supplierId: number) {
 .qualification-dialog-body {
   max-height: 60vh;
   overflow-y: auto;
+}
+/* §2.7 冗余供应商列为 null（供应商已注销/脏 FK）时的缺失态：灰体倾斜 + 原生 title 说明，不折空串 */
+.supplier-missing {
+  color: #909399;
+  font-style: italic;
 }
 </style>
