@@ -7,12 +7,14 @@ import { useUserStore } from '@/stores/user'
 import SupplierLogTable from '@/components/business/SupplierLogTable.vue'
 import SupplierHistoryLogTable from '@/components/business/SupplierHistoryLogTable.vue'
 import QualificationPanel from '@/components/business/QualificationPanel.vue'
+import LifecycleRequestDialog from '@/components/business/LifecycleRequestDialog.vue'
 import { SUPPLIER_STATUS_CODES } from '@/types/supplier-log'
 import type { SupplierStatusCode } from '@/constants/auditDictionary'
 import {
   SUPPLIER_STATUS,
   SUPPLIER_TYPE_OPTIONS,
   formatCreatedAt,
+  getLifecycleActionLabelForStatus,
   getStatusLabel,
   getStatusTagType,
   getSupplierTypeLabel,
@@ -22,11 +24,13 @@ import {
   deleteSupplierApi,
   getSupplierDetailApi,
   getSupplierListApi,
+  submitSupplierApi,
   updateSupplierApi,
 } from '@/api/supplier'
 import { ApiError } from '@/utils/request'
 import { ERROR_CODE } from '@/constants/errorCode'
 import {
+  MODULE2_VALIDATION,
   SUPPLIER_FIELD_BY_MESSAGE,
   SUPPLIER_LOCK_CONFLICT_MSG,
   SUPPLIER_VALIDATION,
@@ -36,6 +40,7 @@ import type {
   SupplierFormModel,
   SupplierItem,
   SupplierListQuery,
+  SupplierSubmitRequest,
   SupplierUpdateRequest,
 } from '@/types/supplier'
 
@@ -45,10 +50,16 @@ import type {
  * 日志视角为业务员维度（entity_type=SUPPLIER）。
  * 20261014：供应商档案列表对接真实后端（契约 §1.1–§1.5，B1 交付），原型演示数据 SUPPLIER_DEMO_LIST 已删除。
  * 20261014（F2）：详情视图挂 QualificationPanel（契约 §1.6–§1.8 资质区），既有列表/弹窗逻辑零改动。
+ * 20261015（F3·模块二）：行操作区补「送审」（§2.1 submit，仅 DRAFT/RETURNED）与「停用/恢复/淘汰申请」
+ *   （§2.4 lifecycle-requests 建单 + LifecycleRequestDialog 弹窗）。铁律：§2.4 **只建一张 PENDING 申请单、
+ *   绝不动供应商状态**，前端成功后不本地改状态、也不提供任何「一键恢复为正常合作」式直改交互
+ *   （原型该类交互违反 acceptance §1.3，已按契约废弃；状态变更须由审核员 §2.6 终审）。
  *
- * 按钮显隐"双维度判断"（体验层，非安全边界）：
- * - 维度一 角色：新增/编辑/删除按钮仅 STAFF 渲染（userStore.role）；
- * - 维度二 状态：编辑仅 DRAFT/RETURNED 行启用、删除仅 DRAFT 行启用（契约 §1.2/§1.5）。
+ * 按钮显隐门控（体验层，非安全边界）：
+ * - 维度一 角色：新增/编辑/删除/送审/生命周期申请仅 STAFF 渲染（userStore.role）；
+ * - 维度二 状态：编辑仅 DRAFT/RETURNED 行启用、删除仅 DRAFT 行启用（契约 §1.2/§1.5）；
+ * - 维度三 归属（仅 §2.4 生命周期申请入口，用户裁决 20261015「仅建档人可提」）：
+ *   created_by ≠ 当前登录用户 ID（UserInfo.user_id）的行隐藏入口，后端 requireSelf→40302「仅限本人操作」兜底。
  * 前端隐藏/禁用只是体验优化，真正的权限拦截在后端：角色不符 40301、状态/归属不符 40302，
  * 前端不禁用也不可能有越权写入，任何按钮态均以服务端校验为最终事实源。
  *
@@ -133,7 +144,7 @@ function showRequestError(err: unknown) {
   }
 }
 
-/* ---------------------------------------------------------------- 状态×角色 双维度门控 */
+/* ---------------------------------------------------------------- 状态×角色×归属 门控 */
 
 /** 状态维度：仅 DRAFT/RETURNED 可编辑（契约 §1.2，服务端 40302 兜底）。 */
 function isEditable(row: SupplierItem): boolean {
@@ -143,6 +154,42 @@ function isEditable(row: SupplierItem): boolean {
 /** 状态维度：仅 DRAFT 可删除（契约 §1.5，服务端 40302 兜底）。 */
 function isDeletable(row: SupplierItem): boolean {
   return row.status === SUPPLIER_STATUS.DRAFT
+}
+
+/** 状态维度：仅 DRAFT/RETURNED 可送审（契约 §2.1 迁移集 DRAFT/RETURNED → PENDING_REVIEW，服务端 40302 兜底）。 */
+function isSubmittable(row: SupplierItem): boolean {
+  return row.status === SUPPLIER_STATUS.DRAFT || row.status === SUPPLIER_STATUS.RETURNED
+}
+
+/**
+ * 状态维度：该行是否值得提供生命周期申请入口（契约 §2.4 类型-状态门槛的反向推导：
+ * NORMAL→SUSPEND/ELIMINATE、SUSPENDED→RESUME/ELIMINATE，ELIMINATED 终态无任何可申请类型 → 入口禁用）。
+ * 可用类型集来自字典 getLifecycleActionLabelForStatus/isLifecycleTypeAllowed（前端体验层），
+ * 门槛权威判定仍在后端 LifecycleRequestServiceImpl（不符 40302），本函数不复制状态机去「假装」允许。
+ */
+function lifecycleActionLabel(row: SupplierItem): string {
+  return getLifecycleActionLabelForStatus(row.status)
+}
+
+function canRequestLifecycle(row: SupplierItem): boolean {
+  return lifecycleActionLabel(row) !== ''
+}
+
+/**
+ * 归属维度（用户裁决 20261015「仅建档人可提」，契约 §2.4 与 §3 表格 line「仅建档人可提」）：
+ * 当前登录用户是否为该档案的建档人。与后端 LifecycleRequestServiceImpl.create() 的
+ * requireSelf(supplier.created_by) 同口径——非建档人后端 40302「仅限本人操作」（§1.2/§1.5 requireSelf 一致）。
+ * 本函数只驱动父级行的入口显隐（体验层收紧），不替代服务端校验；
+ * created_by 来自 SupplierItem.created_by（契约附录 A1，number），user_id 来自 types/auth.UserInfo.user_id。
+ */
+function isCreatedByMe(row: SupplierItem): boolean {
+  return row.created_by === userStore.userInfo?.user_id
+}
+
+/** 入口被禁用时的解释文案（状态维度；角色维度由 v-if + 路由守卫承担；归属维度由 isCreatedByMe 的 v-if 直接隐藏） */
+function lifecycleGateTip(row: SupplierItem): string {
+  if (canRequestLifecycle(row)) return ''
+  return `供应商当前状态（${getStatusLabel(row.status)}）无可用生命周期申请类型（§2.4 门槛：停用仅正常合作、恢复仅停用、淘汰仅正常合作/停用；终态不可再申请），服务端以 40302 校验为准`
 }
 
 /* ---------------------------------------------------------------- 新增/编辑弹窗（§1.1/§1.2） */
@@ -434,6 +481,96 @@ async function handleDelete(row: SupplierItem) {
   }
 }
 
+/* ---------------------------------------------------------------- 送审（§2.1）与生命周期申请（§2.4） */
+
+const actionSubmitting = ref(false)
+
+/**
+ * §2.1 送审：body **仅 version 一字段**（裁决 20261013 候选 B；后端 SupplierSubmitRequest 刻意不加
+ * @NotNull，故 version 缺失/不匹配一律 40901 而非 40001）。
+ * 点击前先提示准入门槛硬约束（后端 SupplierServiceImpl.MSG_LICENSE_REQUIRED 同文案），
+ * 真判定仍在后端：无有效期内营业执照回 40001、状态不符回 40302、越权他人档案回 40302。
+ * 仅建档人可提（用户裁决 20261015）：§2.1 送审目标恒为 DRAFT/RETURNED，这类私有在途区档案本就被
+ * §0 规则 A 的 created_by 过滤成"仅本人可见可改"、天然仅建档人；§2.4 生命周期申请的"仅建档人"门控
+ * 见 isCreatedByMe（归属维度 v-if）与 openLifecycleDialog 同注。
+ */
+async function handleSubmitReview(row: SupplierItem) {
+  try {
+    await ElMessageBox.confirm(
+      `送审前置条件：${MODULE2_VALIDATION.LICENSE_REQUIRED_MSG}。` +
+        `档案「${row.name}」送审后进入待审核，审核员签署前不可编辑。确认提交准入审核？`,
+      '提交准入审核确认',
+      { type: 'warning', confirmButtonText: '确认送审', cancelButtonText: '取消' },
+    )
+  } catch {
+    return // 用户取消
+  }
+  const payload: SupplierSubmitRequest = { version: row.version }
+  actionSubmitting.value = true
+  try {
+    await submitSupplierApi(row.id, payload)
+    ElMessage.success('已提交准入审核，等待审核员签署')
+    await fetchList()
+  } catch (err) {
+    handleSubmitReviewError(err, row)
+  } finally {
+    actionSubmitting.value = false
+  }
+}
+
+/** §2.1 错误分流（40901 照本页 handleSubmitError 既有范式：契约文案 + 重拉 §1.4 换新 version） */
+function handleSubmitReviewError(err: unknown, row: SupplierItem) {
+  if (!(err instanceof ApiError)) {
+    ElMessage.error('网络异常，请稍后重试')
+    return
+  }
+  if (err.code === ERROR_CODE.OPTIMISTIC_LOCK_CONFLICT) {
+    ElMessage.error(SUPPLIER_LOCK_CONFLICT_MSG)
+    void refreshRowSnapshot(row.id)
+    return
+  }
+  if (err.code === ERROR_CODE.VALIDATION_FAILED) {
+    // 40001 在本接口最常见为"无有效期内营业执照"（后端固定文案直显，不反查表单字段：本操作无表单）
+    ElMessage.error(err.message)
+    return
+  }
+  showRequestError(err)
+}
+
+/** 40901 后重拉 §1.4，把列表行替换为服务端最新快照（含新 version 与新状态），下次点击即带正确版本 */
+async function refreshRowSnapshot(id: number) {
+  try {
+    const res = await getSupplierDetailApi(id)
+    if (!res.data) return
+    const index = supplierList.value.findIndex((item) => item.id === id)
+    if (index >= 0) supplierList.value[index] = res.data
+    if (currentSupplier.value?.id === id) currentSupplier.value = res.data
+    ElMessage.info('已获取服务端最新版本，请确认后重新提交')
+  } catch (err) {
+    showRequestError(err)
+  }
+}
+
+const lifecycleDialogVisible = ref(false)
+const lifecycleTarget = ref<SupplierItem | null>(null)
+
+/**
+ * 打开 §2.4 申请弹窗（type + reason 两字段，弹窗内按状态过滤可用类型）。
+ * 仅建档人可提（用户裁决 20261015，契约 §2.4 与 §3 表格 line「仅建档人可提」）：入口显隐在模板层叠加
+ * isCreatedByMe（created_by === 当前登录 user_id），非本人建档的行直接隐藏申请入口；真实拦截仍在后端
+ * LifecycleRequestServiceImpl.create()——非建档人 requireSelf→40302「仅限本人操作」，前端隐藏只是体验层，
+ * 快照滞后仍可点进弹窗时由 LifecycleRequestDialog 透传后端文案兜底（errorCode 既有映射，不新造文案）。
+ */
+function openLifecycleDialog(row: SupplierItem) {
+  lifecycleTarget.value = row
+  lifecycleDialogVisible.value = true
+}
+
+/** §2.4 只建单：供应商状态与 version 均不变，故仅刷新列表读服务端真值，前端不做任何状态改写 */
+function handleLifecycleCreated() {
+  void fetchList()
+}
+
 /* ---------------------------------------------------------------- 详情/日志视图 */
 
 /** 详情/日志：进入供应商全生命周期档案视图（列表行即 SupplierResponse 全 20 字段，无需二次拉取）。 */
@@ -552,7 +689,7 @@ async function handleLogout() {
               <el-table-column label="最近评级" width="100">
                 <template #default="scope">{{ scope.row.latest_performance_grade || '—' }}</template>
               </el-table-column>
-              <el-table-column label="业务操作" width="230" fixed="right">
+              <el-table-column label="业务操作" width="330" fixed="right">
                 <template #default="scope">
                   <el-button size="small" type="primary" link @click="viewDetail(scope.row)">详情/日志</el-button>
                   <!-- 双维度门控：角色(v-if)×状态(:disabled)；服务端 40301/40302 才是安全边界 -->
@@ -576,6 +713,37 @@ async function handleLogout() {
                   >
                     删除草稿
                   </el-button>
+                  <!-- §2.1 送审：角色(v-if)×状态(:disabled) 双维度；40001 无有效执照 / 40901 版本冲突 提示后重拉 -->
+                  <el-button
+                    v-if="isStaff"
+                    size="small"
+                    type="warning"
+                    link
+                    :disabled="!isSubmittable(scope.row) || actionSubmitting"
+                    @click="handleSubmitReview(scope.row)"
+                  >
+                    送审
+                  </el-button>
+                  <!-- §2.4 生命周期申请：角色(v-if)×归属(v-if 仅建档人，裁决 20261015)×状态(:disabled) 三维门控；
+                       非本人建档的行隐藏入口（后端 requireSelf→40302「仅限本人操作」才是安全边界），终态无可用类型则置灰 -->
+                  <el-tooltip
+                    v-if="isStaff && isCreatedByMe(scope.row)"
+                    :content="lifecycleGateTip(scope.row)"
+                    :disabled="canRequestLifecycle(scope.row)"
+                    placement="top"
+                  >
+                    <span>
+                      <el-button
+                        size="small"
+                        type="success"
+                        link
+                        :disabled="!canRequestLifecycle(scope.row)"
+                        @click="openLifecycleDialog(scope.row)"
+                      >
+                        {{ lifecycleActionLabel(scope.row) || '生命周期申请' }}
+                      </el-button>
+                    </span>
+                  </el-tooltip>
                 </template>
               </el-table-column>
             </el-table>
@@ -737,6 +905,13 @@ async function handleLogout() {
         <el-button type="primary" :loading="submitting" @click="handleSubmit">保存</el-button>
       </template>
     </el-dialog>
+
+    <!-- §2.4 生命周期申请弹窗（只建单不动状态；40902 同类型在途单提示由后端文案直显） -->
+    <LifecycleRequestDialog
+      v-model="lifecycleDialogVisible"
+      :supplier="lifecycleTarget"
+      @created="handleLifecycleCreated"
+    />
   </el-container>
 </template>
 

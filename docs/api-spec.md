@@ -48,7 +48,7 @@ interface PageResult<T> {
 | ① | `supplier_qualification` | **已落地（20261012 用户确认后由 tech-lead 直改 `schema.sql`）**：新增 `status VARCHAR(30) NOT NULL DEFAULT 'PENDING'`、`reviewed_by BIGINT NULL`、`reviewed_at DATETIME NULL`、`review_comment VARCHAR(500) NULL` + 生成列 `approved_key` + `UNIQUE KEY uk_supplier_approved_doc`（同供应商同证照仅一条 APPROVED 现行版）+ `idx_supplier_status` | — | 资质审核模型（裁决 20261012）：准入件随供应商 audit 连带批复；`NORMAL` 存续期补传件单独审批；旧 APPROVED 保持生效位无真空 |
 | ② | `audit_log` | **已落地（20261012 用户确认后由 tech-lead 直改 `schema.sql`）**：新增 `supplier_id BIGINT NULL` + `KEY idx_supplier_id`；写日志时冗余写入归属供应商 ID（业务代码写入点随“供应商业务代码批次”补齐） | — | 规则 C 审计行级隔离：`supplier_id IN (本人创建供应商)` 需用单一条件覆盖非 `SUPPLIER` 实体留痕 |
 | ③ | `EntityType` 枚举（`audit/EntityType.java`） | **已落地（实测）**：枚举现为 5 值，已含 `SUPPLIER_QUALIFICATION`（本文旧版「仅四值」的陈述已过期） | — | 仅**存续期单独审批**的资质审核动作以 `SUPPLIER_QUALIFICATION` 为审计对象（`PUT /qualifications/{id}/review`）；**准入期连带批复的留痕直接归 `SUPPLIER` 域**（随 audit 一笔），无需单独枚举实体 |
-| ④ | `lifecycle_request.version` | ⚠️ **实测无此列**（`schema.sql` L165-193 建表段无 `version`；HEAD 提交版本同样没有——属**从未落地**而非重写遗失）。与本文§0「乐观锁全量四实体」铁律相左：`LifecycleRequest` 被列为四实体之一，#17 `LifecycleDecisionRequest.version` 也以其为唯一取值源，因此 **40901 当前无落库基础**（与 DDL④ 同期落地的 `supplier`/`supplier_qualification`/`performance_evaluation` 三表均已有列，唯此表缺失） | 新增 `version INT NOT NULL DEFAULT 1`（与同族三表口径一致）；建 `LifecycleRequest` 实体时挂 `@Version`；`LifecycleRequestResponse.version` 由此列供值 | §0 乐观锁四实体铁律 + 裁决 20261013 候选 A；归 backend-dev「供应商业务代码批次」任务卡（与 #16/#17 同批，需先行落地否则决策步无法实现） |
+| ④ | `lifecycle_request.version` | **已落地（20261015 用户裁决“执行 DDL-2”，由 tech-lead 直改 `schema.sql` L171 补列，运行库 vendor_db 实测已含 `version int NOT NULL DEFAULT 1` + `uk_supplier_active_lifecycle`）**：与同族三表口径一致 | — | §0 乐观锁四实体铁律 + 裁决 20261013 候选 A；`LifecycleRequest` 实体已挂 `@Version`，`LifecycleRequestResponse.version` 由此列供值 |
 
   已落地的同类范式（无需新增，实现 ①② 时照抄写法即可）：`performance_evaluation.active_period_key` + `uk_supplier_active_period`、`lifecycle_request.active_key` + `uk_supplier_active_lifecycle` 都是“逻辑删除友好的虚拟生成列 + 部分唯一索引”；若需强约束“同一类型仅一条 `APPROVED`”，同法用生成列实现，不引入触发器。
 
@@ -317,12 +317,22 @@ interface LifecycleDecisionRequest {
   comment?: string;
   version: number;                 // 乐观锁版本号（对齐 §0 铁律：决策改供应商带版本 status，不回传或版本不匹配 → 40901）
 }
+/**
+ * 跨供应商聚合查询（终审待办队列）专用响应视图（裁决 20261015）：
+ * = LifecycleRequestResponse 全 13 字段（含 version，供 §2.6 决策取值）+ 供应商侧冗余两列。
+ * 目的是让终审待办列表一次拿到“哪个供应商、当前什么状态”，不再需要前端 fan-out 逐个回查 §1.4。
+ */
+interface LifecycleRequestTodoItem extends LifecycleRequestResponse {
+  supplier_name: string;           // 关联 supplier.name
+  supplier_status: SupplierStatus; // 关联 supplier.status（当前合作状态，与申请目标 type 区分展示）
+}
 ```
 
 | 方法 | 路径 | 角色 | 说明 |
 |---|---|---|---|
-| POST | `/suppliers/{id}/lifecycle-requests` | STAFF | `type=SUSPEND` 仅当供应商当前为 `NORMAL`；`type=RESUME` 仅当当前为 `SUSPENDED`；`type=ELIMINATE` 仅当当前为 `NORMAL` 或 `SUSPENDED`；同一供应商同一类型已有 `PENDING` 申请时返回 `40902` |
-| GET | `/suppliers/{id}/lifecycle-requests` | ALL | 申请历史 |
+| POST | `/suppliers/{id}/lifecycle-requests` | STAFF（本人） | **仅建档人可提**（用户裁决 20261015：`supplier.created_by != 当前用户` → `40302`，与 §0 规则 B “公有区非建档人只读”一致）；`type=SUSPEND` 仅当供应商当前为 `NORMAL`；`type=RESUME` 仅当当前为 `SUSPENDED`；`type=ELIMINATE` 仅当当前为 `NORMAL` 或 `SUSPENDED`；同一供应商同一类型已有 `PENDING` 申请时返回 `40902` |
+| GET | `/suppliers/{id}/lifecycle-requests` | ALL | 单供应商申请历史（含 PENDING/APPROVED/REJECTED，按申请时间倒序） |
+| GET | `/lifecycle-requests` | AUDITOR | **跨供应商聚合查询（终审待办，裁决 20261015 增项）**：query `status?`（PENDING/APPROVED/REJECTED）、`type?`（SUSPEND/RESUME/ELIMINATE）、`supplier_id?`、`page`（默认 1）、`page_size`（默认 20，上限 100）；返回 `PageResult<LifecycleRequestTodoItem>`，按 `applied_at` 倒序；只读、不写审计；`version` 仍为 §2.6 决策合法取值源（与 §2.5 同口径）；非法枚举码值 `40001`、非 AUDITOR `40301` |
 | POST | `/lifecycle-requests/{id}/decision` | AUDITOR | `APPROVE` 且 `type=SUSPEND` → 供应商置 `SUSPENDED`；`APPROVE` 且 `type=RESUME` → 供应商置 `NORMAL`；`APPROVE` 且 `type=ELIMINATE` → 供应商置 `ELIMINATED`（终态，之后不可再对该供应商创建任何生命周期申请）；`REJECT` 只改申请状态，供应商状态不变。入参 `version` 取 #13 GET 申请历史返回的 `LifecycleRequestResponse.version`（裁决 20261013 已补齐该出参，取值链闭合），不匹配 `40901`。全量写 `AuditLog` |
 
 ---

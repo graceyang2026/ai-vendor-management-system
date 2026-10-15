@@ -1,23 +1,31 @@
 package com.srm.core.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.srm.core.audit.AuditAction;
+import com.srm.core.audit.AuditResult;
+import com.srm.core.audit.EntityType;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.srm.core.common.BusinessException;
 import com.srm.core.common.ErrorCode;
 import com.srm.core.common.PageResult;
 import com.srm.core.common.enums.Role;
+import com.srm.core.dto.supplier.SupplierAuditDecisionRequest;
 import com.srm.core.dto.supplier.SupplierCreateRequest;
 import com.srm.core.dto.supplier.SupplierResponse;
+import com.srm.core.dto.supplier.SupplierSubmitRequest;
 import com.srm.core.dto.supplier.SupplierUpdateRequest;
 import com.srm.core.dto.supplier.SupplierValidationPatterns;
 import com.srm.core.entity.Supplier;
+import com.srm.core.entity.SupplierQualification;
 import com.srm.core.entity.User;
 import com.srm.core.mapper.SupplierMapper;
+import com.srm.core.mapper.SupplierQualificationMapper;
 import com.srm.core.mapper.UserMapper;
 import com.srm.core.security.CurrentUserProvider;
 import com.srm.core.security.RoleGuard;
 import com.srm.core.security.UserPrincipal;
+import com.srm.core.service.AuditLogService;
 import com.srm.core.service.SupplierService;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
@@ -54,13 +62,39 @@ import java.util.stream.Collectors;
  *   "ADMIN 例外" 措辞早于该裁决，以裁决为准）。写操作不受本放宽影响：AUDITOR/ADMIN 仍只读（40301）。
  * - <b>派生字段归二期</b>（用户裁决 2026-10-14 16:15）：business_license_url /
  *   latest_performance_grade / risk_warning 恒 null，本类不做任何派生计算。
- * - <b>本批不落 AuditLog</b>（同一裁决）：§1.1–§1.5 契约未要求留痕，AuditAction 维持 11 码不变。
+ * - <b>§1.1–§1.5 不落 AuditLog</b>（同一裁决）：契约未要求留痕，AuditAction 维持 11 码不变；
+ *   模块二 §2.1/§2.2 则<b>必须</b>留痕（契约 §2.1 L297、§2.2 L354），并冗余写 supplier_id（DDL②）。
+ *
+ * 模块二状态机（本类新增 submit/audit）设计要点：
+ * - <b>唯一状态入口</b>：supplier.status 只能由 §2.1/§2.2 与 §2.6 生命周期终审改写，
+ *   本类没有任何"把状态当入参"的方法（§1.2 的 SupplierUpdateRequest 物理上无 status 字段）。
+ * - <b>乐观锁三层递进</b>：① 缺失 version → 40901（并发语义，契约 §2.1 候选 B 明文，非格式失败）；
+ *   ② 0/负数 → 入参层 40001；③ 与库内不一致 → {@code @Version} 拦截器 update 影响 0 行 → 40901，
+ *   事务回滚，状态/资质/审计三处一律不变（acceptance §1.2）。
+ * - <b>§2.2 连带批复同事务</b>：审供应商即审资质（裁决 20261012 方案 A），批量批复与状态迁移
+ *   共处一个 {@code @Transactional}，任一失败整体回滚；只取本供应商 PENDING 件，
+ *   APPROVED 件经生成列唯一索引 uk_supplier_approved_doc 的"旧件逻辑退位"让位（不物理删）。
+ * - <b>审计零新增码（方案甲）</b>：连带批复不另落第二笔 SUPPLIER_QUALIFICATION 留痕，
+ *   只写 SUPPLIER 域一笔 AUDIT_APPROVE/AUDIT_REJECT，资质归属体现在 audit_log.supplier_id。
  */
 @Service
 public class SupplierServiceImpl implements SupplierService {
 
+    /** 供应商六态（契约附录 A1 status 行）：本类只涉及迁移的两端与准入后状态，不含生命周期三态 */
     private static final String STATUS_DRAFT = "DRAFT";
     private static final String STATUS_RETURNED = "RETURNED";
+    private static final String STATUS_PENDING_REVIEW = "PENDING_REVIEW";
+    private static final String STATUS_NORMAL = "NORMAL";
+
+    /** 资质三态与证照类型（§2.2 连带批复用；码值权威见 SupplierQualification 实体注释） */
+    private static final String QUAL_PENDING = "PENDING";
+    private static final String QUAL_APPROVED = "APPROVED";
+    private static final String QUAL_REJECTED = "REJECTED";
+    private static final String DOC_TYPE_BUSINESS_LICENSE = "BUSINESS_LICENSE";
+
+    /** §2.2/§2.6 决策二值（入参层 @Pattern 同套值域，Service 侧第二道闸） */
+    private static final String DECISION_APPROVE = "APPROVE";
+    private static final String DECISION_REJECT = "REJECT";
 
     private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("uuuu-MM-dd");
     private static final DateTimeFormatter DATE_TIME_FORMAT = DateTimeFormatter.ofPattern("uuuu-MM-dd'T'HH:mm:ss");
@@ -74,18 +108,32 @@ public class SupplierServiceImpl implements SupplierService {
     private static final String MSG_EDITABLE_STATUS = "仅草稿/退回状态允许编辑";
     private static final String MSG_DELETABLE_STATUS = "仅草稿状态可删除";
     private static final String MSG_VERSION_CONFLICT = "数据已被修改，请刷新后重试";
+    /** 契约 §2.1 错误码矩阵 L308 原文文案 */
+    private static final String MSG_LICENSE_REQUIRED = "请先上传有效期内的营业执照";
+    /** 契约模块二通用 40302 文案（§2.1 L310 已给，本域各状态闸门共用） */
+    private static final String MSG_STATUS_NOT_ALLOWED = "当前状态不允许该操作";
+    /** 契约 §2.2 错误码矩阵 L366 原文文案 */
+    private static final String MSG_REJECT_COMMENT_REQUIRED = SupplierValidationPatterns.REJECT_COMMENT_MSG;
+    /** 契约 §2.3 L429 的 40902 文案；§2.2 连带批复若撞上生效位竞态，同口径回传（契约未单列，取同族文案） */
+    private static final String MSG_APPROVED_RACE = "业务冲突";
 
     private final SupplierMapper supplierMapper;
     private final UserMapper userMapper;
+    private final SupplierQualificationMapper qualificationMapper;
+    private final AuditLogService auditLogService;
     private final RoleGuard roleGuard;
     private final CurrentUserProvider currentUserProvider;
 
     public SupplierServiceImpl(SupplierMapper supplierMapper,
                                UserMapper userMapper,
+                               SupplierQualificationMapper qualificationMapper,
+                               AuditLogService auditLogService,
                                RoleGuard roleGuard,
                                CurrentUserProvider currentUserProvider) {
         this.supplierMapper = supplierMapper;
         this.userMapper = userMapper;
+        this.qualificationMapper = qualificationMapper;
+        this.auditLogService = auditLogService;
         this.roleGuard = roleGuard;
         this.currentUserProvider = currentUserProvider;
     }
@@ -229,6 +277,76 @@ public class SupplierServiceImpl implements SupplierService {
         supplierMapper.deleteById(id);
     }
 
+    // ==================== §2.1 提交准入审核 ====================
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public SupplierResponse submit(Long id, SupplierSubmitRequest request) {
+        roleGuard.requireRole(Role.STAFF);
+        Supplier supplier = requireSupplier(id);
+        // 判序（与 SupplierSubmitAuditIntegrationTest 逐条对齐）：角色 → 存在性 → 本人 → 状态
+        // → 营业执照硬门槛 → 乐观锁。前四道都是"这个请求根本没有资格进入迁移"，
+        // 硬门槛是"业务前置条件不满足"，乐观锁必须最后判：它只解决并发脏写，不该抢业务报错的位。
+        roleGuard.requireSelf(supplier.getCreatedBy());
+        roleGuard.requireStatusAllowed(isSubmittable(supplier.getStatus()), MSG_STATUS_NOT_ALLOWED);
+        requireUnexpiredBusinessLicense(id);
+        requireVersionPresent(request.getVersion());
+
+        String oldStatus = supplier.getStatus();
+        LocalDateTime now = LocalDateTime.now();
+        supplier.setStatus(STATUS_PENDING_REVIEW);
+        supplier.setUpdatedAt(now);
+        // 乐观锁：WHERE version = 入参版本，@Version 拦截器负责自增；影响 0 行即并发脏写
+        supplier.setVersion(request.getVersion());
+        if (supplierMapper.updateById(supplier) == 0) {
+            throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK_CONFLICT, MSG_VERSION_CONFLICT);
+        }
+
+        UserPrincipal me = currentUserProvider.require();
+        auditLogService.record(EntityType.SUPPLIER, supplier.getId(), supplier.getId(), me,
+                AuditAction.SUBMIT.name(), oldStatus, STATUS_PENDING_REVIEW, AuditResult.SUCCESS, null);
+        return toResponse(supplier, creatorName(supplier.getCreatedBy()));
+    }
+
+    // ==================== §2.2 准入审核决策（连带批复资质） ====================
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public SupplierResponse audit(Long id, SupplierAuditDecisionRequest request) {
+        roleGuard.requireRole(Role.AUDITOR);
+        Supplier supplier = requireSupplier(id);
+        // 只允许 PENDING_REVIEW：DRAFT 直审 / NORMAL 再审都属非法状态审核（acceptance §1.1）
+        roleGuard.requireStatusAllowed(STATUS_PENDING_REVIEW.equals(supplier.getStatus()),
+                MSG_STATUS_NOT_ALLOWED);
+
+        boolean approve = isApprove(request.getDecision());
+        String comment = trimToNull(request.getComment());
+        if (!approve) {
+            // 契约 §2.2 L366：驳回必须给理由，且本步先于任何写操作——失败要"状态与资质一律不变"
+            requireRejectComment(comment);
+        }
+        requireVersionPresent(request.getVersion());
+
+        UserPrincipal me = currentUserProvider.require();
+        String oldStatus = supplier.getStatus();
+        String newStatus = approve ? STATUS_NORMAL : STATUS_RETURNED;
+        LocalDateTime now = LocalDateTime.now();
+        supplier.setStatus(newStatus);
+        supplier.setUpdatedAt(now);
+        supplier.setVersion(request.getVersion());
+        if (supplierMapper.updateById(supplier) == 0) {
+            throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK_CONFLICT, MSG_VERSION_CONFLICT);
+        }
+
+        // 同事务连带批复（裁决 20261012 方案 A）：准入件不单独走 §2.3，随本接口整体批复
+        cascadePendingQualifications(supplier.getId(), approve, me.getId(), comment, now);
+
+        auditLogService.record(EntityType.SUPPLIER, supplier.getId(), supplier.getId(), me,
+                (approve ? AuditAction.AUDIT_APPROVE : AuditAction.AUDIT_REJECT).name(),
+                oldStatus, newStatus, AuditResult.SUCCESS, comment);
+        return toResponse(supplier, creatorName(supplier.getCreatedBy()));
+    }
+
     // ==================== 内部方法 ====================
 
     private Supplier requireSupplier(Long id) {
@@ -238,6 +356,103 @@ public class SupplierServiceImpl implements SupplierService {
             throw new BusinessException(ErrorCode.NOT_FOUND, MSG_SUPPLIER_NOT_FOUND);
         }
         return supplier;
+    }
+
+    /** §2.1 允许的起始态：DRAFT（首次送审）与 RETURNED（驳回后重提环），契约 §2.1 L262 */
+    private boolean isSubmittable(String status) {
+        return STATUS_DRAFT.equals(status) || STATUS_RETURNED.equals(status);
+    }
+
+    /**
+     * §2.1 前置硬门槛（契约 L263）：名下至少一份<b>未过期</b> BUSINESS_LICENSE 资质，
+     * 判定条件 {@code expiry_date >= 今天}（当天到期仍算未过期，边界由集成用例锁定）。
+     * 只认营业执照类型：OTHER 即便未过期也不构成准入门槛；{@code @TableLogic} 已让逻辑删除件隐身；
+     * expiry_date 为 NULL 的行在 SQL 比较中不满足 {@code >=}，属契约字面口径（§1.7 入参层本就强制必填）。
+     */
+    private void requireUnexpiredBusinessLicense(Long supplierId) {
+        long valid = Optional.ofNullable(qualificationMapper.selectCount(
+                new LambdaQueryWrapper<SupplierQualification>()
+                        .eq(SupplierQualification::getSupplierId, supplierId)
+                        .eq(SupplierQualification::getDocType, DOC_TYPE_BUSINESS_LICENSE)
+                        .ge(SupplierQualification::getExpiryDate, LocalDate.now()))).orElse(0L);
+        if (valid == 0) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, MSG_LICENSE_REQUIRED);
+        }
+    }
+
+    /**
+     * version 缺失 → 40901（契约 §2.1 L312「version 缺失或不匹配」+ api-spec §2 接口表
+     * 「不回传或版本不匹配 → 40901」）。刻意不用 40001：缺失是并发语义（客户端没拿到版本号），
+     * 且入参层 @Min 已把 0/负数这类<b>格式</b>非法折成 40001，二者必须分层。
+     */
+    private void requireVersionPresent(Integer version) {
+        if (version == null) {
+            throw new BusinessException(ErrorCode.OPTIMISTIC_LOCK_CONFLICT, MSG_VERSION_CONFLICT);
+        }
+    }
+
+    /** 决策码值第二道闸：入参层 @Pattern 已拦一次，Service 仍不得把未知值默认当成 REJECT */
+    private boolean isApprove(String decision) {
+        if (DECISION_APPROVE.equals(decision)) {
+            return true;
+        }
+        if (DECISION_REJECT.equals(decision)) {
+            return false;
+        }
+        throw new BusinessException(ErrorCode.VALIDATION_FAILED,
+                SupplierValidationPatterns.PARAM_INVALID_MSG);
+    }
+
+    /** 纯空白等同未填写（契约"comment 为空"含前端传空格串的实际形态） */
+    private String trimToNull(String value) {
+        return StringUtils.hasText(value) ? value.trim() : null;
+    }
+
+    private void requireRejectComment(String comment) {
+        if (comment == null) {
+            throw new BusinessException(ErrorCode.VALIDATION_FAILED, MSG_REJECT_COMMENT_REQUIRED);
+        }
+    }
+
+    /**
+     * §2.2 连带批复（同事务，契约 L324）：本供应商<b>全部</b> PENDING 资质批量置
+     * APPROVED（APPROVE）或 REJECTED（REJECT），并回写 reviewed_by/reviewed_at/review_comment。
+     *
+     * APPROVE 分支先做"同类型旧 APPROVED 件退位"：{@code @TableLogic} 下 delete(wrapper) 编译为
+     * {@code UPDATE deleted=1}（历史保留、不物理删、status 不改写——backend-interface-design L210 口径），
+     * 必须早于本件更新，否则生成列 approved_key 会撞 uk_supplier_approved_doc 唯一索引。
+     * REJECT 分支绝不退位：旧件保持生效位（api-spec §2"资质生效路径"L281，避免批复真空）。
+     * 空集（纯表单准入、一张资质都没传）直接返回，不得报错。
+     */
+    private void cascadePendingQualifications(Long supplierId, boolean approve, Long reviewerId,
+                                              String comment, LocalDateTime now) {
+        List<SupplierQualification> pending = qualificationMapper.selectList(
+                new LambdaQueryWrapper<SupplierQualification>()
+                        .eq(SupplierQualification::getSupplierId, supplierId)
+                        .eq(SupplierQualification::getStatus, QUAL_PENDING));
+        if (pending.isEmpty()) {
+            return;
+        }
+        for (SupplierQualification qualification : pending) {
+            if (approve) {
+                qualificationMapper.delete(new LambdaQueryWrapper<SupplierQualification>()
+                        .eq(SupplierQualification::getSupplierId, supplierId)
+                        .eq(SupplierQualification::getDocType, qualification.getDocType())
+                        .eq(SupplierQualification::getStatus, QUAL_APPROVED));
+            }
+            qualification.setStatus(approve ? QUAL_APPROVED : QUAL_REJECTED);
+            qualification.setReviewedBy(reviewerId);
+            qualification.setReviewedAt(now);
+            qualification.setReviewComment(comment);
+            qualification.setUpdatedAt(now);
+            try {
+                qualificationMapper.updateById(qualification);
+            } catch (DuplicateKeyException ex) {
+                // 生效位并发竞态（同类型两条同时置 APPROVED）由 DB 唯一索引兜底折 40902，
+                // 与 §2.3 同口径；绝不冒 50001、绝不泄露 SQL
+                throw new BusinessException(ErrorCode.DUPLICATE_IN_PROGRESS, MSG_APPROVED_RACE);
+            }
+        }
     }
 
     private boolean isEditable(String status) {

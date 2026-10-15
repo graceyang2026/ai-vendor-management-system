@@ -6,7 +6,9 @@ import com.srm.core.common.ErrorCode;
 import com.srm.core.common.GlobalExceptionHandler;
 import com.srm.core.common.PageResult;
 import com.srm.core.dto.supplier.SupplierCreateRequest;
+import com.srm.core.dto.supplier.SupplierAuditDecisionRequest;
 import com.srm.core.dto.supplier.SupplierResponse;
+import com.srm.core.dto.supplier.SupplierSubmitRequest;
 import com.srm.core.dto.supplier.SupplierUpdateRequest;
 import com.srm.core.service.SupplierService;
 import org.junit.jupiter.api.BeforeEach;
@@ -43,6 +45,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * 3. SupplierResponse 20 字段物理 snake_case；三枚派生字段本批恒 null（裁决 2026-10-14 16:15）
  * 4. PUT Partial：version 必带 >= 1；只对提交字段校验
  * 5. 列表 query 参数 status/keyword/page/page_size 透传与默认值；删除成功 data=null
+ *
+ * 模块二追加（§2.1 submit / §2.2 audit 入参层边界）：
+ * 6. 入参层只拦<b>格式</b>：decision 值域、version 的 0/负数 → 40001 固定文案，非法入参不得触达 Service；
+ * 7. <b>version 缺失必须放行到 Service</b>（契约 §2.1 L312 把缺失与不匹配同归 40901，属并发语义），
+ *    <b>REJECT 缺 comment 同样放行到 Service</b>（跨字段条件必填，注解表达不了）——两条都靠
+ *    "Service 被调用 + 捕获到 null" 正向锁定，而不是只断言错误码；
+ * 8. 40302/40401/40901/40902 一律 HTTP 200 + body.code（用户裁决 2026-10-14 传输口径）。
  */
 @ExtendWith(MockitoExtension.class)
 class SupplierControllerTest {
@@ -61,6 +70,11 @@ class SupplierControllerTest {
     private static final String PHONE_MSG = "联系电话格式不合法（必须为11位有效手机号）";
     private static final String EMAIL_MSG = "联系邮箱格式不合法";
     private static final String DATE_MSG = "日期格式不合法或失效日期早于生效日期";
+    // 模块二固定文案（契约 §2.1/§2.2 矩阵 + §0 L36 乐观锁文案权威注记）
+    private static final String PARAM_INVALID_MSG = "参数校验失败";
+    private static final String VERSION_MSG = "版本号不合法（必须为正整数）";
+    private static final String VERSION_CONFLICT_MSG = "数据已被修改，请刷新后重试";
+    private static final String REJECT_COMMENT_MSG = "驳回时必须填写意见";
 
     @BeforeEach
     void setUp() {
@@ -362,5 +376,219 @@ class SupplierControllerTest {
                 .andExpect(jsonPath("$.code").value(40001))
                 .andExpect(jsonPath("$.message").value(DATE_MSG));
         verify(supplierService, never()).create(any(SupplierCreateRequest.class));
+    }
+
+    // ==================== 模块二 §2.1 POST /suppliers/{id}/submit ====================
+
+    private static SupplierResponse statusResponse(String status, int version) {
+        return SupplierResponse.builder()
+                .id(100L)
+                .name("杭州之江电镀有限公司")
+                .taxNo("91330100MA27XXXX8X")
+                .type("MANUFACTURING")
+                .contactName("王强")
+                .contactPhone("13800138000")
+                .contactEmail("wang@example.com")
+                .address("杭州市西湖区")
+                .remark("备注")
+                .businessLicenseUrl(null)
+                .effectiveDate("2026-01-01")
+                .expiryDate("2028-12-31")
+                .status(status)
+                .version(version)
+                .createdBy(2L)
+                .createdByName("张三")
+                .createdAt("2026-10-14T10:00:00")
+                .updatedAt("2026-10-15T10:00:00")
+                .latestPerformanceGrade(null)
+                .riskWarning(null)
+                .build();
+    }
+
+    private void expectSubmitValidationError(String bodyJson, String expectedMessage) throws Exception {
+        mockMvc.perform(post("/api/v1/suppliers/100/submit")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(bodyJson))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(40001))
+                .andExpect(jsonPath("$.message").value(expectedMessage));
+        verify(supplierService, never()).submit(anyLong(), any(SupplierSubmitRequest.class));
+    }
+
+    @Test
+    void submitBindsVersionOnlyBodyAndReturnsPendingReviewShape() throws Exception {
+        when(supplierService.submit(eq(100L), any(SupplierSubmitRequest.class)))
+                .thenReturn(statusResponse("PENDING_REVIEW", 2));
+
+        mockMvc.perform(post("/api/v1/suppliers/100/submit")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.status").value("PENDING_REVIEW"))
+                .andExpect(jsonPath("$.data.version").value(2))
+                .andExpect(jsonPath("$.data.created_by_name").value("张三"))
+                // 派生三枚仍归二期：submit 出参与 §1.4 同一 SupplierResponse 形态，不得偷跑计算
+                .andExpect(jsonPath("$.data.risk_warning").value(nullValue()))
+                .andExpect(jsonPath("$.data.business_license_url").value(nullValue()));
+
+        ArgumentCaptor<SupplierSubmitRequest> captor = ArgumentCaptor.forClass(SupplierSubmitRequest.class);
+        verify(supplierService).submit(eq(100L), captor.capture());
+        assertThat(captor.getValue().getVersion()).isEqualTo(1);
+    }
+
+    @Test
+    void submitMissingVersionIsPassedThroughToServiceBecauseItIsConcurrencySemantics() throws Exception {
+        // 契约 §2.1 L312：version 缺失或不匹配 → 40901，属并发语义，入参层不得抢先折 40001
+        when(supplierService.submit(eq(100L), any(SupplierSubmitRequest.class)))
+                .thenThrow(new BusinessException(ErrorCode.OPTIMISTIC_LOCK_CONFLICT, VERSION_CONFLICT_MSG));
+
+        mockMvc.perform(post("/api/v1/suppliers/100/submit")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(40901));
+
+        ArgumentCaptor<SupplierSubmitRequest> captor = ArgumentCaptor.forClass(SupplierSubmitRequest.class);
+        verify(supplierService).submit(eq(100L), captor.capture());
+        assertThat(captor.getValue().getVersion()).isNull();
+    }
+
+    @Test
+    void submitNonPositiveVersionRejectedAtInputLayer() throws Exception {
+        expectSubmitValidationError("{\"version\":0}", VERSION_MSG);
+        expectSubmitValidationError("{\"version\":-1}", VERSION_MSG);
+    }
+
+    @Test
+    void submitBusinessErrorsKeepHttp200WithBodyCode() throws Exception {
+        when(supplierService.submit(eq(100L), any(SupplierSubmitRequest.class)))
+                .thenThrow(new BusinessException(ErrorCode.VALIDATION_FAILED, "请先上传有效期内的营业执照"));
+        mockMvc.perform(post("/api/v1/suppliers/100/submit")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(40001))
+                .andExpect(jsonPath("$.message").value("请先上传有效期内的营业执照"));
+
+        when(supplierService.submit(eq(200L), any(SupplierSubmitRequest.class)))
+                .thenThrow(new BusinessException(ErrorCode.STATUS_NOT_ALLOWED, "当前状态不允许该操作"));
+        mockMvc.perform(post("/api/v1/suppliers/200/submit")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(40302));
+
+        when(supplierService.submit(eq(300L), any(SupplierSubmitRequest.class)))
+                .thenThrow(new BusinessException(ErrorCode.NOT_FOUND, "供应商不存在"));
+        mockMvc.perform(post("/api/v1/suppliers/300/submit")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(40401));
+    }
+
+    // ==================== 模块二 §2.2 POST /suppliers/{id}/audit ====================
+
+    private static String auditBody(String decisionJson, String commentJson, String versionJson) {
+        return "{\"version\":" + versionJson + ",\"decision\":" + decisionJson
+                + ",\"comment\":" + commentJson + "}";
+    }
+
+    private void expectAuditValidationError(String bodyJson, String expectedMessage) throws Exception {
+        mockMvc.perform(post("/api/v1/suppliers/100/audit")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(bodyJson))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(40001))
+                .andExpect(jsonPath("$.message").value(expectedMessage));
+        verify(supplierService, never()).audit(anyLong(), any(SupplierAuditDecisionRequest.class));
+    }
+
+    @Test
+    void auditBindsThreeFieldsAndReturnsNormalShapeOnApprove() throws Exception {
+        when(supplierService.audit(eq(100L), any(SupplierAuditDecisionRequest.class)))
+                .thenReturn(statusResponse("NORMAL", 3));
+
+        mockMvc.perform(post("/api/v1/suppliers/100/audit")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(auditBody("\"APPROVE\"", "null", "2")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.status").value("NORMAL"))
+                .andExpect(jsonPath("$.data.version").value(3));
+
+        ArgumentCaptor<SupplierAuditDecisionRequest> captor =
+                ArgumentCaptor.forClass(SupplierAuditDecisionRequest.class);
+        verify(supplierService).audit(eq(100L), captor.capture());
+        assertThat(captor.getValue().getDecision()).isEqualTo("APPROVE");
+        assertThat(captor.getValue().getVersion()).isEqualTo(2);
+        assertThat(captor.getValue().getComment()).isNull();
+    }
+
+    @Test
+    void auditDecisionOutsideEnumRejectedAtInputLayer() throws Exception {
+        expectAuditValidationError(auditBody("\"PASS\"", "\"意见\"", "2"), PARAM_INVALID_MSG);
+        expectAuditValidationError(auditBody("\"approve\"", null, "2"), PARAM_INVALID_MSG);
+        expectAuditValidationError(auditBody("\"APPROVED\"", null, "2"), PARAM_INVALID_MSG);
+        expectAuditValidationError(auditBody("\"\"", null, "2"), PARAM_INVALID_MSG);
+        expectAuditValidationError("{\"version\":2,\"comment\":\"缺 decision\"}", PARAM_INVALID_MSG);
+    }
+
+    @Test
+    void auditNonPositiveVersionRejectedAtInputLayer() throws Exception {
+        expectAuditValidationError(auditBody("\"REJECT\"", "\"意见\"", "0"), VERSION_MSG);
+        expectAuditValidationError(auditBody("\"REJECT\"", "\"意见\"", "-2"), VERSION_MSG);
+    }
+
+    @Test
+    void auditRejectWithoutCommentIsJudgedByServiceNotInputLayer() throws Exception {
+        // 条件必填（decision=REJECT 才必填）无法由单字段注解表达：入参层必须放行，Service 折 40001
+        when(supplierService.audit(eq(100L), any(SupplierAuditDecisionRequest.class)))
+                .thenThrow(new BusinessException(ErrorCode.VALIDATION_FAILED, REJECT_COMMENT_MSG));
+
+        mockMvc.perform(post("/api/v1/suppliers/100/audit")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(auditBody("\"REJECT\"", "null", "2")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(40001))
+                .andExpect(jsonPath("$.message").value(REJECT_COMMENT_MSG));
+
+        ArgumentCaptor<SupplierAuditDecisionRequest> captor =
+                ArgumentCaptor.forClass(SupplierAuditDecisionRequest.class);
+        verify(supplierService).audit(eq(100L), captor.capture());
+        assertThat(captor.getValue().getComment()).isNull();
+    }
+
+    @Test
+    void auditMissingVersionIsPassedThroughToServiceAndKeeps40901() throws Exception {
+        when(supplierService.audit(eq(100L), any(SupplierAuditDecisionRequest.class)))
+                .thenThrow(new BusinessException(ErrorCode.OPTIMISTIC_LOCK_CONFLICT, VERSION_CONFLICT_MSG));
+
+        mockMvc.perform(post("/api/v1/suppliers/100/audit")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"decision\":\"APPROVE\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(40901));
+        verify(supplierService).audit(eq(100L), any(SupplierAuditDecisionRequest.class));
+    }
+
+    @Test
+    void auditBusinessErrorsKeepHttp200WithBodyCode() throws Exception {
+        when(supplierService.audit(eq(700L), any(SupplierAuditDecisionRequest.class)))
+                .thenThrow(new BusinessException(ErrorCode.STATUS_NOT_ALLOWED, "当前状态不允许该操作"));
+        mockMvc.perform(post("/api/v1/suppliers/700/audit")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(auditBody("\"APPROVE\"", null, "1")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(40302));
+
+        when(supplierService.audit(eq(800L), any(SupplierAuditDecisionRequest.class)))
+                .thenThrow(new BusinessException(ErrorCode.DUPLICATE_IN_PROGRESS, "业务冲突"));
+        mockMvc.perform(post("/api/v1/suppliers/800/audit")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(auditBody("\"APPROVE\"", null, "1")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(40902));
     }
 }

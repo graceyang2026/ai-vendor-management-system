@@ -9,18 +9,28 @@ import {
   type UploadRawFile,
 } from 'element-plus'
 import { useUserStore } from '@/stores/user'
-import { createQualificationApi, getQualificationListApi, uploadFileApi } from '@/api/qualification'
+import {
+  createQualificationApi,
+  getQualificationListApi,
+  reviewQualificationApi,
+  uploadFileApi,
+} from '@/api/qualification'
 import { ApiError } from '@/utils/request'
 import { ERROR_CODE } from '@/constants/errorCode'
 import {
+  DECISION,
   ENTITY_TYPE,
   QUALIFICATION_DOC_TYPE,
+  QUALIFICATION_REVIEW_OPTIONS,
+  QUALIFICATION_STATUS,
   SUPPLIER_STATUS,
   formatCreatedAt,
   getQualificationDocTypeLabel,
   getStatusLabel,
   getStatusTagType,
+  type DecisionCode,
 } from '@/constants/auditLogView'
+import { MODULE2_VALIDATION, SUPPLIER_LOCK_CONFLICT_MSG } from '@/constants/supplierValidation'
 import type { SupplierStatusCode } from '@/constants/auditDictionary'
 import {
   FILE_UPLOAD_ACCEPT,
@@ -34,6 +44,7 @@ import {
 import type {
   QualificationCreateRequest,
   QualificationItem,
+  QualificationReviewRequest,
 } from '@/types/qualification'
 
 /**
@@ -58,8 +69,19 @@ import type {
  *   （§1.7 允许集，裁决 20261011 解除"准入后资质无法维护"死锁；另"仅本人档案"归属门槛
  *   前端无 ID 比对语义依据时不预判，由服务端 requireSelf 把关）。
  * 真正的权限拦截在后端：状态/归属不符 40302、供应商不存在 40401，前端 disabled+tooltip
- * 只是提前禁用，任何按钮态均以服务端校验为最终事实源。列表本身三角色可读（§1.8 ALL），
- * AUDITOR/ADMIN 视角只读展示（本批无审批操作，§2.3 审批属后续批次）。
+ * 只是提前禁用，任何按钮态均以服务端校验为最终事实源。列表本身三角色可读（§1.8 ALL）。
+ *
+ * §2.3 存续期资质单独审批（本轮 20261015 落地，此前「后续批次」限制已放开）：
+ * - 角色维度：仅 AUDITOR 渲染行内「审批」入口（后端 @PreAuthorize AUDITOR，其余 40301）；
+ *   ADMIN 维持只读展示（§1.8 全量可见，但契约无 ADMIN 审批权，前端不给入口）。
+ * - 状态维度：仅**供应商 NORMAL** 才提供 §2.3 入口（契约范围限定「仅存续期补传件」，
+ *   裁决 20261012：准入期 DRAFT/PENDING_REVIEW/RETURNED 的 PENDING 资质由 §2.2 准入签署
+ *   连带批复，不调本接口）；行维度：仅资质 status=PENDING 的行可审批，已决行只读。
+ *   前置不满足后端回 40302（供应商非 NORMAL 或资质非 PENDING），前端提前隐藏只是体验。
+ * - 入参：PUT /qualifications/{id}/review body {action, review_comment, version}——
+ *   **首字段名是 action 不是 decision**（用户裁决 20261012 定稿），码值仍复用 DECISION 两码
+ *   （后端 ACTION_REGEX 引用 DECISION_REGEX 单一源）；version 取 §1.8 每行 version（唯一取值链），
+ *   故审批提交前一律用列表现值，40901 触发后重拉 §1.8 换新 version（同业务员侧 40901 范式）。
  *
  * §1.8 可见性组合口径（裁决 20261014，后端 ServiceImpl 已实现）：本人 STAFF 见 APPROVED+PENDING+
  * REJECTED；非本人 STAFF 仅 APPROVED+PENDING；AUDITOR/ADMIN 全量。前端不做二次过滤，
@@ -88,6 +110,29 @@ const UPLOAD_ALLOWED_SUPPLIER_STATUS: SupplierStatusCode[] = [
 const isStaff = computed(() => userStore.role === 'STAFF')
 const statusAllowed = computed(() => UPLOAD_ALLOWED_SUPPLIER_STATUS.includes(props.supplierStatus))
 const canUpload = computed(() => isStaff.value && statusAllowed.value)
+
+/** §2.3 角色维度：仅 AUDITOR 有存续期资质审批权（ADMIN 只读，后端 40301 兜底） */
+const isAuditor = computed(() => userStore.role === 'AUDITOR')
+/** §2.3 状态维度：仅 NORMAL 供应商的存续期补传件适用本接口（准入期件走 §2.2 连带批复） */
+const reviewScopeAllowed = computed(() => props.supplierStatus === SUPPLIER_STATUS.NORMAL)
+
+/** 行级门控：§2.3 入口 = AUDITOR ×（供应商 NORMAL）×（资质 PENDING），任一不满足即不出现 */
+function canReviewRow(row: QualificationItem): boolean {
+  return isAuditor.value && reviewScopeAllowed.value && row.status === QUALIFICATION_STATUS.PENDING
+}
+
+/** 行是否处于待审（码值比较走 QUALIFICATION_STATUS 常量，组件内不出现裸串值） */
+function isPendingQualification(row: QualificationItem): boolean {
+  return row.status === QUALIFICATION_STATUS.PENDING
+}
+
+/** 非 NORMAL 供应商的 AUDITOR 视角提示（说明为何看不到审批入口，避免误判为前端漏做） */
+const reviewGateTip = computed(() => {
+  if (!isAuditor.value) return ''
+  if (reviewScopeAllowed.value) return ''
+  return `供应商当前状态（${getStatusLabel(props.supplierStatus)}）非正常合作，存续期资质审批（§2.3）仅适用于正常合作供应商；` +
+    '准入期待审资质由「供应商准入资质审核」签署时连带批复（§2.2），服务端以 40302 校验为准'
+})
 
 const uploadGateTip = computed(() => {
   if (!isStaff.value) return '上传资质为业务员（STAFF）专属操作，当前角色只读展示（服务端 40301 兜底）'
@@ -345,6 +390,127 @@ function handleSubmitError(err: unknown) {
   // 40302（状态/归属不允许）、40401（供应商不存在）等：message 直显后端契约文案
   showRequestError(err)
 }
+
+/* ---------------------------------------------------------------- §2.3 存续期资质单独审批（AUDITOR） */
+
+/**
+ * 审批弹窗表单 UI 模型（非契约对象）：action 收敛为 DECISION 两码之一（传码显中文，
+ * 展示中文来自字典 QUALIFICATION_REVIEW_OPTIONS，组件内不写串值）；version 不入表单，
+ * 提交时取当前行 §1.8 快照的 row.version（唯一取值链）。
+ */
+interface QualificationReviewForm {
+  action: DecisionCode
+  review_comment: string
+}
+
+const reviewDialogVisible = ref(false)
+const reviewSubmitting = ref(false)
+const reviewTarget = ref<QualificationItem | null>(null)
+const reviewFormRef = ref<FormInstance>()
+const reviewForm = reactive<QualificationReviewForm>({ action: DECISION.APPROVE, review_comment: '' })
+const reviewCommentError = ref('')
+
+/** 意见占位文案随结论切换（驳回必填、通过选填，与 §2.3 后端条件必填同口径） */
+const reviewCommentPlaceholder = computed(() =>
+  reviewForm.action === DECISION.REJECT
+    ? '必填：请写明驳回依据（如证照模糊/有效期不符/主体名称不一致）'
+    : '选填：可记录核验说明',
+)
+
+const reviewFormRules: FormRules<QualificationReviewForm> = {
+  action: [{ required: true, message: MODULE2_VALIDATION.PARAM_INVALID_MSG, trigger: 'change' }],
+  review_comment: [
+    {
+      // 条件必填：action=REJECT 时必填（后端 Service 折 40001「驳回时必须填写意见」，同文案先验）
+      validator: (_rule, value, callback) => {
+        if (reviewForm.action === DECISION.REJECT && !String(value ?? '').trim()) {
+          callback(new Error(MODULE2_VALIDATION.REJECT_COMMENT_MSG))
+          return
+        }
+        callback()
+      },
+      trigger: 'blur',
+    },
+  ],
+}
+
+function openReviewDialog(row: QualificationItem) {
+  reviewTarget.value = row
+  reviewForm.action = DECISION.APPROVE
+  reviewForm.review_comment = ''
+  reviewCommentError.value = ''
+  reviewFormRef.value?.clearValidate()
+  reviewDialogVisible.value = true
+}
+
+function closeReviewDialog() {
+  reviewDialogVisible.value = false
+  reviewSubmitting.value = false
+}
+
+/** §2.3 请求体：三字段 {action, review_comment, version}，字段名逐字对齐后端 QualificationReviewRequest */
+function buildReviewPayload(row: QualificationItem): QualificationReviewRequest {
+  const payload: QualificationReviewRequest = { action: reviewForm.action, version: row.version }
+  const comment = reviewForm.review_comment.trim()
+  // 选填侧（APPROVE）空白不提交：后端原样回写 review_comment，空串与 null 语义不同，前端不凑值
+  if (comment) payload.review_comment = comment
+  return payload
+}
+
+async function handleReviewSubmit() {
+  const row = reviewTarget.value
+  if (!row) return
+  reviewCommentError.value = ''
+  const formEl = reviewFormRef.value
+  if (!formEl) return
+  try {
+    await formEl.validate()
+  } catch {
+    return // 本地校验未过，错误已展示
+  }
+  reviewSubmitting.value = true
+  try {
+    await reviewQualificationApi(row.id, buildReviewPayload(row))
+    // 批复后的状态中文不硬编码：重拉 §1.8 后由列表经字典 getStatusLabel(status, SUPPLIER_QUALIFICATION) 渲染
+    ElMessage.success('资质审批结论已提交')
+    closeReviewDialog()
+    await loadList()
+  } catch (err) {
+    handleReviewError(err)
+  } finally {
+    reviewSubmitting.value = false
+  }
+}
+
+/** §2.3 错误分流：40901 重拉 §1.8 换新 version（业务员侧 SupplierListView 同款范式） */
+function handleReviewError(err: unknown) {
+  if (!(err instanceof ApiError)) {
+    ElMessage.error('网络异常，请稍后重试')
+    return
+  }
+  if (err.code === ERROR_CODE.OPTIMISTIC_LOCK_CONFLICT) {
+    // 40901：该行 version 已被他方写操作推进 → 契约固定文案 + 重拉列表取新 version 后再审
+    ElMessage.error(SUPPLIER_LOCK_CONFLICT_MSG)
+    closeReviewDialog()
+    void loadList()
+    return
+  }
+  if (err.code === ERROR_CODE.VALIDATION_FAILED) {
+    ElMessage.error(err.message)
+    if (err.message === MODULE2_VALIDATION.REJECT_COMMENT_MSG) {
+      reviewCommentError.value = err.message
+    }
+    return
+  }
+  // 40302（供应商非 NORMAL / 资质非 PENDING）、40401（资质不存在）、40902（并发置生效位竞态）直显后端文案
+  if (err.code === ERROR_CODE.STATUS_NOT_ALLOWED || err.code === ERROR_CODE.NOT_FOUND) {
+    ElMessage.error(err.message)
+    closeReviewDialog()
+    void loadList()
+    return
+  }
+  showRequestError(err)
+}
 </script>
 
 <template>
@@ -357,7 +523,8 @@ function handleSubmitError(err: unknown) {
           <el-button type="primary" :disabled="!canUpload" @click="openUploadDialog">+ 上传资质</el-button>
         </span>
       </el-tooltip>
-      <el-tag v-else type="info" size="small">当前角色为只读展示（上传资质限业务员）</el-tag>
+      <!-- AUDITOR 无上传权但有 §2.3 审批权：文案只声明上传入口归属，避免与右侧审批列自相矛盾 -->
+        <el-tag v-else type="info" size="small">上传资质入口限业务员（本角色仅可查看，正常合作供应商的待审资质见右侧审批列）</el-tag>
     </div>
 
     <!-- §1.8 资质列表：后端行级可见性裁定，前端不做二次过滤 -->
@@ -398,6 +565,26 @@ function handleSubmitError(err: unknown) {
       </el-table-column>
       <el-table-column label="上传时间" width="160">
         <template #default="scope">{{ formatCreatedAt(scope.row.created_at) }}</template>
+      </el-table-column>
+      <!-- §2.3 审批列：仅 AUDITOR 出现（v-if 角色维度）；行级再按 供应商NORMAL×资质PENDING 精确门控 -->
+      <el-table-column v-if="isAuditor" label="合规审批" width="130" fixed="right">
+        <template #default="scope">
+          <el-button
+            v-if="canReviewRow(scope.row)"
+            size="small"
+            type="success"
+            @click="openReviewDialog(scope.row)"
+          >
+            审批
+          </el-button>
+          <el-tooltip v-else :content="reviewGateTip" :disabled="!reviewGateTip" placement="top">
+            <span>
+              <el-button size="small" link disabled>
+                {{ isPendingQualification(scope.row) ? '不可审批' : '已批复' }}
+              </el-button>
+            </span>
+          </el-tooltip>
+        </template>
       </el-table-column>
       <!-- version 不出列：§1.8 每行携带的乐观锁版本是 §2.3 审批入参的唯一取值链（类型保留、内部字段不外显） -->
     </el-table>
@@ -453,6 +640,61 @@ function handleSubmitError(err: unknown) {
       <template #footer>
         <el-button @click="closeUploadDialog">取消</el-button>
         <el-button type="primary" :loading="submitting" :disabled="uploading" @click="handleSubmit">提交送审</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- §2.3 存续期资质单独审批弹窗（AUDITOR；入参首字段 action，version 取列表行现值） -->
+    <el-dialog v-model="reviewDialogVisible" title="存续期资质审批" width="560px">
+      <el-alert
+        type="info"
+        show-icon
+        :closable="false"
+        style="margin-bottom: 16px"
+        title="适用于正常合作供应商存续期补传的资质：通过后本件置为现行有效、同类型旧件自动退位；驳回则旧件保持生效位。供应商合作状态不受本接口影响。"
+      />
+      <el-descriptions v-if="reviewTarget" :column="2" border size="small" style="margin-bottom: 16px">
+        <el-descriptions-item label="证照类型">{{ getQualificationDocTypeLabel(reviewTarget.doc_type) }}</el-descriptions-item>
+        <el-descriptions-item label="当前审核状态">
+          <el-tag size="small" :type="getStatusTagType(reviewTarget.status)">
+            {{ getStatusLabel(reviewTarget.status, ENTITY_TYPE.SUPPLIER_QUALIFICATION) }}
+          </el-tag>
+        </el-descriptions-item>
+        <el-descriptions-item label="有效期">{{ reviewTarget.effective_date }} ~ {{ reviewTarget.expiry_date }}</el-descriptions-item>
+        <el-descriptions-item label="上传时间">{{ formatCreatedAt(reviewTarget.created_at) }}</el-descriptions-item>
+        <el-descriptions-item label="证照文件" :span="2">
+          <el-link type="primary" @click="openFileUrl(reviewTarget.file_url)">
+            {{ fileDisplayName(reviewTarget.file_url) }}
+          </el-link>
+        </el-descriptions-item>
+      </el-descriptions>
+      <el-form ref="reviewFormRef" :model="reviewForm" :rules="reviewFormRules" label-width="100px">
+        <el-form-item label="审批结论" prop="action">
+          <!-- 传码显中文：value=APPROVE/REJECT 两码（auditDictionary.DECISION），label 走字典中文 -->
+          <el-radio-group v-model="reviewForm.action">
+            <el-radio v-for="opt in QUALIFICATION_REVIEW_OPTIONS" :key="opt.value" :value="opt.value">
+              {{ opt.label }}
+            </el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item
+          label="审批意见"
+          prop="review_comment"
+          :required="reviewForm.action === DECISION.REJECT"
+          :error="reviewCommentError"
+        >
+          <el-input
+            v-model="reviewForm.review_comment"
+            type="textarea"
+            :rows="3"
+            maxlength="512"
+            show-word-limit
+            :placeholder="reviewCommentPlaceholder"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="closeReviewDialog">取消</el-button>
+        <el-button type="primary" :loading="reviewSubmitting" @click="handleReviewSubmit">提交审批结论</el-button>
       </template>
     </el-dialog>
   </div>

@@ -38,6 +38,24 @@ public final class QualificationValidationPatterns {
      */
     public static final String DATE_MSG = com.srm.core.dto.supplier.SupplierValidationPatterns.DATE_MSG;
 
+    // ==================== 模块二 §2.3 存续期单独审批（引用供应商域单一事实源，杜绝两套正则漂移） ====================
+
+    /**
+     * §2.3 入参 {@code action} 的值域与 §2.2 供应商审核的 {@code decision} <b>完全相同</b>
+     * （契约 §2.3 L405 与 §2.2 字段表均为 APPROVE / REJECT），故直接引用 supplier 域常量，
+     * 不在本类另写一份正则——同一码值两套写法是契约漂移的高发点。
+     */
+    public static final String ACTION_REGEX =
+            com.srm.core.dto.supplier.SupplierValidationPatterns.DECISION_REGEX;
+
+    /** 40001 泛义文案（契约 §2.4 L481、§2.6 L552 逐字；§2.3 矩阵未单列 action 非法行，取模块二统一口径） */
+    public static final String PARAM_INVALID_MSG =
+            com.srm.core.dto.supplier.SupplierValidationPatterns.PARAM_INVALID_MSG;
+
+    /** §2.3 错误码矩阵 L425 原文文案（action=REJECT 且 review_comment 为空，Service 层判定） */
+    public static final String REJECT_COMMENT_MSG =
+            com.srm.core.dto.supplier.SupplierValidationPatterns.REJECT_COMMENT_MSG;
+
     private QualificationValidationPatterns() {
     }
 }

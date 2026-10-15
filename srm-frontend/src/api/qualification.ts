@@ -16,6 +16,7 @@ import type {
   FileUploadResult,
   QualificationCreateRequest,
   QualificationItem,
+  QualificationReviewRequest,
 } from '@/types/qualification'
 
 /**
@@ -49,4 +50,20 @@ export function createQualificationApi(
  */
 export function getQualificationListApi(supplierId: number): Promise<ApiResponse<QualificationItem[]>> {
   return request.get<QualificationItem[]>(`/suppliers/${supplierId}/qualifications`)
+}
+
+/**
+ * §2.3 PUT /qualifications/{id}/review —— 存续期资质单独审批（AUDITOR 专属，其余 40301）。
+ * 路径参数 id=§1.8 列表返回的资质记录 ID；请求体三字段 {action, review_comment, version}
+ * —— **首字段名是 action 不是 decision**（用户裁决 20261012 定稿，口径照 §2.2 同款但换名）。
+ * 前置（不符 40302）：供应商必须 NORMAL、资质必须 PENDING；action=REJECT 且 review_comment 空 → 40001。
+ * APPROVE 置 APPROVED 并同类型旧件自动退位；REJECT 置 REJECTED 且旧件保持生效位，
+ * 供应商 NORMAL 基础合作状态不受影响。并发置生效位竞态由 DB uk_supplier_approved_doc 兜底 → 40902。
+ * 成功 data=QualificationResponse（status/reviewed_by/reviewed_at/review_comment 回写，version 自增）。
+ */
+export function reviewQualificationApi(
+  id: number,
+  data: QualificationReviewRequest,
+): Promise<ApiResponse<QualificationItem>> {
+  return request.put<QualificationItem>(`/qualifications/${id}/review`, data)
 }

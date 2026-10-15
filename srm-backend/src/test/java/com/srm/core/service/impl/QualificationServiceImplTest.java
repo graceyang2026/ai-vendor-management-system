@@ -5,9 +5,12 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.srm.core.common.BusinessException;
 import com.srm.core.common.ErrorCode;
+import com.srm.core.audit.AuditResult;
+import com.srm.core.audit.EntityType;
 import com.srm.core.common.enums.Role;
 import com.srm.core.dto.qualification.QualificationCreateRequest;
 import com.srm.core.dto.qualification.QualificationResponse;
+import com.srm.core.dto.qualification.QualificationReviewRequest;
 import com.srm.core.entity.Supplier;
 import com.srm.core.entity.SupplierQualification;
 import com.srm.core.mapper.SupplierMapper;
@@ -15,10 +18,12 @@ import com.srm.core.mapper.SupplierQualificationMapper;
 import com.srm.core.security.CurrentUserProvider;
 import com.srm.core.security.RoleGuard;
 import com.srm.core.security.UserPrincipal;
+import com.srm.core.service.AuditLogService;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.DuplicateKeyException;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
@@ -32,7 +37,11 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -56,8 +65,13 @@ import static org.mockito.Mockito.when;
  * 5. create 同类型在途顶替（裁决 20261015，契约 §1.7 业务约束新增行）：全部校验通过后、insert 前
  *    先逻辑删除同 supplier + 同 doc_type 的旧 PENDING 行；校验失败路径绝不触达顶替（delete 不得被调用）。
  *
- * 单元层只能锁定"wrapper 是否追加了 status 排除条件"这一<b>决策</b>；
- * 真实行过滤结果由 QualificationIntegrationTest 在 H2 上端到端锁定。
+ * 6.（模块二 §2.3 新增）review：判序 40301 → 资质 40401 → 供应商 40401 → 供应商非 NORMAL 40302
+ *    → 资质非 PENDING 40302 → action 码值 40001 → REJECT 缺意见 40001 → version 缺失 40901
+ *    → updateById 0 行 40901 / DuplicateKey 40902；APPROVE 分支才做同类型旧件退位，
+ *    审计动作必带 REVIEW_ 前缀并冗余 supplier_id（契约 §2.3 L382-384/L413-419）。
+ *
+ * 单元层只能锁定"wrapper 是否追加了 status 排除条件"这类<b>决策</b>；
+ * 真实行过滤结果、@Version 自增、生成列唯一索引竞态由集成测试在 H2 上端到端锁定。
  */
 @ExtendWith(MockitoExtension.class)
 class QualificationServiceImplTest {
@@ -70,6 +84,9 @@ class QualificationServiceImplTest {
 
     @Mock
     private CurrentUserProvider currentUserProvider;
+
+    @Mock
+    private AuditLogService auditLogService;
 
     private QualificationServiceImpl service;
 
@@ -91,7 +108,7 @@ class QualificationServiceImplTest {
     void setUp() {
         // RoleGuard 用真实实例包裹 mock provider：40301/40302 语义走生产同一实现（照 B1 范式）
         service = new QualificationServiceImpl(supplierMapper, qualificationMapper,
-                new RoleGuard(currentUserProvider), currentUserProvider);
+                new RoleGuard(currentUserProvider), currentUserProvider, auditLogService);
     }
 
     // ==================== 夹具 ====================
@@ -149,6 +166,21 @@ class QualificationServiceImplTest {
         q.setVersion(version);
         q.setCreatedAt(LocalDateTime.of(2026, 10, 14, 9, 30));
         q.setDeleted(0);
+        return q;
+    }
+
+    /** §2.3 请求体夹具（字段名 action / review_comment / version，契约 §2.3 L393-407） */
+    private static QualificationReviewRequest reviewRequest(String action, String comment, Integer version) {
+        QualificationReviewRequest req = new QualificationReviewRequest();
+        req.setAction(action);
+        req.setReviewComment(comment);
+        req.setVersion(version);
+        return req;
+    }
+
+    private static SupplierQualification pendingQualOf(long supplierId) {
+        SupplierQualification q = row(501L, "PENDING", "BUSINESS_LICENSE", "2028-12-31", 1);
+        q.setSupplierId(supplierId);
         return q;
     }
 
@@ -614,5 +646,239 @@ class QualificationServiceImplTest {
         when(qualificationMapper.selectList(any())).thenReturn(Collections.emptyList());
 
         assertThat(service.list(1001L)).isEmpty();
+    }
+
+    // ==================== §2.3 review 存续期资质单独审批 ====================
+
+    @Test
+    void reviewApproveWritesApprovedWithReviewTraceAndRetirePreviousApprovedRow() {
+        // 存续期件：供应商 NORMAL + 资质 PENDING 才允许进入本接口（契约 §2.3 L382）
+        when(currentUserProvider.require()).thenReturn(auditor());
+        SupplierQualification q = pendingQualOf(1001L);
+        when(qualificationMapper.selectById(501L)).thenReturn(q);
+        when(supplierMapper.selectById(1001L)).thenReturn(supplier(1001L, "NORMAL", 2L));
+        when(qualificationMapper.updateById(any(SupplierQualification.class))).thenReturn(1);
+
+        QualificationResponse resp = service.review(501L, reviewRequest("APPROVE", "证照清晰，予以通过。", 1));
+
+        assertThat(resp.getStatus()).isEqualTo("APPROVED");
+        // 单测层无 @Version 拦截器，出参版本即入参版本；真实自增由集成测试在 H2 上锁定
+        assertThat(resp.getVersion()).isEqualTo(1);
+        assertThat(resp.getReviewedBy()).isEqualTo(3L);
+        assertThat(resp.getReviewComment()).isEqualTo("证照清晰，予以通过。");
+        assertThat(resp.getExpired()).isFalse();
+
+        ArgumentCaptor<SupplierQualification> captor = ArgumentCaptor.forClass(SupplierQualification.class);
+        verify(qualificationMapper).updateById(captor.capture());
+        assertThat(captor.getValue().getReviewedAt()).isNotNull();
+        assertThat(captor.getValue().getUpdatedAt()).isNotNull();
+        // APPROVE 分支必做同类型旧 APPROVED 件退位（生效位让路，且必须早于本件更新）
+        InOrder ordered = inOrder(qualificationMapper);
+        ordered.verify(qualificationMapper).delete(any());
+        ordered.verify(qualificationMapper).updateById(any(SupplierQualification.class));
+
+        verify(auditLogService).record(eq(EntityType.SUPPLIER_QUALIFICATION), eq(501L), eq(1001L),
+                any(UserPrincipal.class), eq("REVIEW_APPROVE"), eq("PENDING"), eq("APPROVED"),
+                eq(AuditResult.SUCCESS), eq("证照清晰，予以通过。"));
+    }
+
+    @Test
+    void reviewApproveWithoutCommentSucceedsAndWritesNullComment() {
+        // review_comment 只在 REJECT 时必填：APPROVE 分支可省略（契约 §2.3 字段表 L406「条件必填」）
+        when(currentUserProvider.require()).thenReturn(auditor());
+        when(qualificationMapper.selectById(501L)).thenReturn(pendingQualOf(1001L));
+        when(supplierMapper.selectById(1001L)).thenReturn(supplier(1001L, "NORMAL", 2L));
+        when(qualificationMapper.updateById(any(SupplierQualification.class))).thenReturn(1);
+
+        assertThat(service.review(501L, reviewRequest("APPROVE", null, 1)).getStatus()).isEqualTo("APPROVED");
+
+        verify(auditLogService).record(eq(EntityType.SUPPLIER_QUALIFICATION), eq(501L), eq(1001L),
+                any(UserPrincipal.class), eq("REVIEW_APPROVE"), eq("PENDING"), eq("APPROVED"),
+                eq(AuditResult.SUCCESS), isNull());
+    }
+
+    @Test
+    void reviewRejectWritesRejectedAndNeverRetiresOldApprovedRow() {
+        when(currentUserProvider.require()).thenReturn(auditor());
+        when(qualificationMapper.selectById(501L)).thenReturn(pendingQualOf(1001L));
+        when(supplierMapper.selectById(1001L)).thenReturn(supplier(1001L, "NORMAL", 2L));
+        when(qualificationMapper.updateById(any(SupplierQualification.class))).thenReturn(1);
+
+        QualificationResponse resp = service.review(501L,
+                reviewRequest("REJECT", "证照模糊无法辨识有效期，请重新上传。", 1));
+
+        assertThat(resp.getStatus()).isEqualTo("REJECTED");
+        assertThat(resp.getReviewComment()).isEqualTo("证照模糊无法辨识有效期，请重新上传。");
+        // api-spec L281「批复真空」约束：驳回绝不动旧生效位
+        verify(qualificationMapper, never()).delete(any());
+        verify(auditLogService).record(eq(EntityType.SUPPLIER_QUALIFICATION), eq(501L), eq(1001L),
+                any(UserPrincipal.class), eq("REVIEW_REJECT"), eq("PENDING"), eq("REJECTED"),
+                eq(AuditResult.SUCCESS), eq("证照模糊无法辨识有效期，请重新上传。"));
+    }
+
+    @Test
+    void reviewByNonAuditorReturns40301AndTouchesNothing() {
+        when(currentUserProvider.require()).thenReturn(staffOwner());
+
+        BusinessException ex = asBiz(catchThrowable(() -> service.review(501L,
+                reviewRequest("APPROVE", null, 1))));
+        assertThat(ex.getCode()).isEqualTo(ErrorCode.FORBIDDEN);
+        assertThat(ex.getMessage()).isEqualTo("无权限");
+        verifyNoInteractions(qualificationMapper, supplierMapper, auditLogService);
+    }
+
+    @Test
+    void reviewQualificationNotFoundReturns40401() {
+        when(currentUserProvider.require()).thenReturn(auditor());
+        when(qualificationMapper.selectById(999L)).thenReturn(null);
+
+        BusinessException ex = asBiz(catchThrowable(() -> service.review(999L,
+                reviewRequest("APPROVE", null, 1))));
+        assertThat(ex.getCode()).isEqualTo(ErrorCode.NOT_FOUND);
+        // 契约 §2.3 L427 矩阵原文即泛义「资源不存在」；资质域无契约登记的专属文案，不自拟
+        assertThat(ex.getMessage()).isEqualTo("资源不存在");
+        verifyNoInteractions(supplierMapper, auditLogService);
+    }
+
+    @Test
+    void reviewOrphanQualificationWhoseSupplierGoneReturns40401SupplierMessage() {
+        when(currentUserProvider.require()).thenReturn(auditor());
+        when(qualificationMapper.selectById(501L)).thenReturn(pendingQualOf(1001L));
+        when(supplierMapper.selectById(1001L)).thenReturn(null);
+
+        BusinessException ex = asBiz(catchThrowable(() -> service.review(501L,
+                reviewRequest("APPROVE", null, 1))));
+        assertThat(ex.getCode()).isEqualTo(ErrorCode.NOT_FOUND);
+        // 供应商域 40401 文案由契约 §0 L36 权威注记锁定为「供应商不存在」，跨接口不得漂移
+        assertThat(ex.getMessage()).isEqualTo("供应商不存在");
+    }
+
+    @Test
+    void reviewOnDraftSupplierReturns40302BecauseAdmissionCasesMustGoAudit() {
+        // 裁决 20261012 范围限定：准入期件只能随 §2.2 连带批复，本接口只服务 NORMAL 存续期件
+        when(currentUserProvider.require()).thenReturn(auditor());
+        when(qualificationMapper.selectById(501L)).thenReturn(pendingQualOf(1001L));
+        when(supplierMapper.selectById(1001L)).thenReturn(supplier(1001L, "DRAFT", 2L));
+
+        BusinessException ex = asBiz(catchThrowable(() -> service.review(501L,
+                reviewRequest("APPROVE", null, 1))));
+        assertThat(ex.getCode()).isEqualTo(ErrorCode.STATUS_NOT_ALLOWED);
+        assertThat(ex.getMessage()).isEqualTo(MSG_STATUS_NOT_ALLOWED);
+        verify(qualificationMapper, never()).updateById(any(SupplierQualification.class));
+        verifyNoInteractions(auditLogService);
+    }
+
+    @Test
+    void reviewAlreadyApprovedQualificationReturns40302() {
+        when(currentUserProvider.require()).thenReturn(auditor());
+        when(qualificationMapper.selectById(501L))
+                .thenReturn(row(501L, "APPROVED", "BUSINESS_LICENSE", "2028-12-31", 2));
+        when(supplierMapper.selectById(1001L)).thenReturn(supplier(1001L, "NORMAL", 2L));
+
+        BusinessException ex = asBiz(catchThrowable(() -> service.review(501L,
+                reviewRequest("APPROVE", null, 2))));
+        assertThat(ex.getCode()).isEqualTo(ErrorCode.STATUS_NOT_ALLOWED);
+        verify(qualificationMapper, never()).updateById(any(SupplierQualification.class));
+    }
+
+    @Test
+    void reviewStatusGateIsJudgedBeforeVersionSoDirtyVersionOnDecidedRowStill40302() {
+        // 判序锁定：状态闸门先于乐观锁，避免"已决件 + 脏版本"回成 40901 掩盖真实原因
+        when(currentUserProvider.require()).thenReturn(auditor());
+        when(qualificationMapper.selectById(501L)).thenReturn(row(501L, "REJECTED", "OTHER", null, 5));
+        when(supplierMapper.selectById(1001L)).thenReturn(supplier(1001L, "NORMAL", 2L));
+
+        assertThat(asBiz(catchThrowable(() -> service.review(501L,
+                reviewRequest("REJECT", "理由", 999))))
+                .getCode()).isEqualTo(ErrorCode.STATUS_NOT_ALLOWED);
+    }
+
+    @Test
+    void reviewUnknownActionReturns40001AndNeverTreatsItAsReject() {
+        when(currentUserProvider.require()).thenReturn(auditor());
+        when(qualificationMapper.selectById(501L)).thenReturn(pendingQualOf(1001L));
+        when(supplierMapper.selectById(1001L)).thenReturn(supplier(1001L, "NORMAL", 2L));
+
+        BusinessException ex = asBiz(catchThrowable(() -> service.review(501L,
+                reviewRequest("PASS", null, 1))));
+        assertThat(ex.getCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(ex.getMessage()).isEqualTo("参数校验失败");
+        verify(qualificationMapper, never()).updateById(any(SupplierQualification.class));
+        verifyNoInteractions(auditLogService);
+    }
+
+    @Test
+    void reviewRejectWithoutCommentOrWithBlankCommentReturns40001AndChangesNothing() {
+        when(currentUserProvider.require()).thenReturn(auditor());
+        when(qualificationMapper.selectById(501L)).thenReturn(pendingQualOf(1001L));
+        when(supplierMapper.selectById(1001L)).thenReturn(supplier(1001L, "NORMAL", 2L));
+
+        BusinessException missing = asBiz(catchThrowable(() -> service.review(501L,
+                reviewRequest("REJECT", null, 1))));
+        assertThat(missing.getCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(missing.getMessage()).isEqualTo("驳回时必须填写意见");
+        assertThat(asBiz(catchThrowable(() -> service.review(501L,
+                reviewRequest("REJECT", "   ", 1)))).getCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        assertThat(asBiz(catchThrowable(() -> service.review(501L,
+                reviewRequest("REJECT", "", 1)))).getCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+        verify(qualificationMapper, never()).updateById(any(SupplierQualification.class));
+        verifyNoInteractions(auditLogService);
+    }
+
+    @Test
+    void reviewMissingVersionReturns40901() {
+        // version 缺失属并发语义而非格式语义，与 §2.1 候选 B 同口径
+        when(currentUserProvider.require()).thenReturn(auditor());
+        when(qualificationMapper.selectById(501L)).thenReturn(pendingQualOf(1001L));
+        when(supplierMapper.selectById(1001L)).thenReturn(supplier(1001L, "NORMAL", 2L));
+
+        BusinessException ex = asBiz(catchThrowable(() -> service.review(501L,
+                reviewRequest("APPROVE", null, null))));
+        assertThat(ex.getCode()).isEqualTo(ErrorCode.OPTIMISTIC_LOCK_CONFLICT);
+        verify(qualificationMapper, never()).updateById(any(SupplierQualification.class));
+    }
+
+    @Test
+    void reviewStaleVersionReturns40901AndWritesNoAudit() {
+        when(currentUserProvider.require()).thenReturn(auditor());
+        when(qualificationMapper.selectById(501L)).thenReturn(pendingQualOf(1001L));
+        when(supplierMapper.selectById(1001L)).thenReturn(supplier(1001L, "NORMAL", 2L));
+        when(qualificationMapper.updateById(any(SupplierQualification.class))).thenReturn(0);
+
+        BusinessException ex = asBiz(catchThrowable(() -> service.review(501L,
+                reviewRequest("APPROVE", null, 7))));
+        assertThat(ex.getCode()).isEqualTo(ErrorCode.OPTIMISTIC_LOCK_CONFLICT);
+        assertThat(ex.getMessage()).isEqualTo("数据已被修改，请刷新后重试");
+        verifyNoInteractions(auditLogService);
+    }
+
+    @Test
+    void reviewApproveHittingApprovedUniqueIndexReturns40902() {
+        // 生效位并发竞态：两个 AUDITOR 同时批不同件，DB 唯一索引兜底，DuplicateKey 必须转译 40902
+        when(currentUserProvider.require()).thenReturn(auditor());
+        when(qualificationMapper.selectById(501L)).thenReturn(pendingQualOf(1001L));
+        when(supplierMapper.selectById(1001L)).thenReturn(supplier(1001L, "NORMAL", 2L));
+        when(qualificationMapper.updateById(any(SupplierQualification.class)))
+                .thenThrow(new DuplicateKeyException("uk_supplier_approved_doc"));
+
+        BusinessException ex = asBiz(catchThrowable(() -> service.review(501L,
+                reviewRequest("APPROVE", null, 1))));
+        assertThat(ex.getCode()).isEqualTo(ErrorCode.DUPLICATE_IN_PROGRESS);
+        assertThat(ex.getMessage()).isEqualTo("业务冲突");
+        verifyNoInteractions(auditLogService);
+    }
+
+    @Test
+    void reviewTrimsCommentBeforeWritingItBack() {
+        when(currentUserProvider.require()).thenReturn(auditor());
+        when(qualificationMapper.selectById(501L)).thenReturn(pendingQualOf(1001L));
+        when(supplierMapper.selectById(1001L)).thenReturn(supplier(1001L, "NORMAL", 2L));
+        when(qualificationMapper.updateById(any(SupplierQualification.class))).thenReturn(1);
+
+        QualificationResponse resp = service.review(501L, reviewRequest("REJECT", "  证照模糊  ", 1));
+
+        assertThat(resp.getReviewComment()).isEqualTo("证照模糊");
+        verify(auditLogService).record(any(EntityType.class), anyLong(), anyLong(),
+                any(UserPrincipal.class), any(), any(), any(), any(), eq("证照模糊"));
     }
 }

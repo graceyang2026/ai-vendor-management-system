@@ -12,9 +12,13 @@
  * 状态裁决 20261012，QUALIFICATION_STATUS_LABEL 经 getStatusLabel(code, SUPPLIER_QUALIFICATION) 分流）。
  */
 
-import type { QualificationDocTypeCode, QualificationStatusCode } from '@/constants/auditDictionary'
+import type {
+  DecisionCode,
+  QualificationDocTypeCode,
+  QualificationStatusCode,
+} from '@/constants/auditDictionary'
 
-export type { QualificationDocTypeCode, QualificationStatusCode }
+export type { DecisionCode, QualificationDocTypeCode, QualificationStatusCode }
 
 /**
  * §1.6 FileUploadResponse（3 字段；后端 FileUploadResponse.java 类注释明示：本 DTO 刻意不含
@@ -74,4 +78,20 @@ export interface QualificationCreateRequest {
   effective_date: string
   /** 证照到期日 yyyy-MM-dd，必须晚于生效日（后端 @AssertTrue 跨字段复核，契约用词"晚于"） */
   expiry_date: string
+}
+
+/**
+ * QualificationReviewRequest（契约 §2.3 请求体，字段名口径照 §2.2 同款但**首字段叫 action 不叫 decision**；
+ * 后端实文 dto/qualification/QualificationReviewRequest.java：
+ * @JsonProperty("action") / @JsonProperty("review_comment") / @JsonProperty("version")）。
+ * - action 码值复用 constants/auditDictionary.DECISION 两码（后端 ACTION_REGEX 引用 DECISION_REGEX）；
+ * - review_comment 仅 action=REJECT 时必填（40001「驳回时必须填写意见」），回写 supplier_qualification.review_comment；
+ * - version 取 §1.8 资质列表每行 QualificationResponse.version（唯一取值链），不匹配 40901；
+ * - 范围限定（裁决 20261012）：仅 NORMAL 供应商存续期补传件；准入期件走 §2.2 连带批复。
+ *   前置不满足（供应商非 NORMAL 或资质非 PENDING）后端 40302，前端不提供独立"重试"入口。
+ */
+export interface QualificationReviewRequest {
+  action: DecisionCode
+  review_comment?: string
+  version: number
 }

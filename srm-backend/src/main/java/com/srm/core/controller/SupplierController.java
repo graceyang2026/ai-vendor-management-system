@@ -2,8 +2,10 @@ package com.srm.core.controller;
 
 import com.srm.core.common.ApiResponse;
 import com.srm.core.common.PageResult;
+import com.srm.core.dto.supplier.SupplierAuditDecisionRequest;
 import com.srm.core.dto.supplier.SupplierCreateRequest;
 import com.srm.core.dto.supplier.SupplierResponse;
+import com.srm.core.dto.supplier.SupplierSubmitRequest;
 import com.srm.core.dto.supplier.SupplierUpdateRequest;
 import com.srm.core.service.SupplierService;
 import jakarta.validation.Valid;
@@ -19,7 +21,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * 模块一：供应商主链接口（契约 §1.1–§1.5，docs/api-spec.md §2）。
+ * 供应商主链 + 状态机前两道门接口（契约 §1.1–§1.5、§2.1–§2.2，docs/api-spec.md §2）。
  *
  * 职责边界：本类只做<b>入参层一次校验</b>（@Valid + Bean Validation，格式失败 40001 随 HTTP 200 回传）
  * 与角色粗粒度拦截（@PreAuthorize → Security 层 403/40301）；
@@ -68,6 +70,29 @@ public class SupplierController {
     @PreAuthorize("hasAnyRole('ADMIN', 'STAFF', 'AUDITOR')")
     public ApiResponse<SupplierResponse> detail(@PathVariable Long id) {
         return ApiResponse.success(supplierService.get(id));
+    }
+
+    /**
+     * §2.1 POST /suppliers/{id}/submit — DRAFT/RETURNED → PENDING_REVIEW（STAFF 仅本人）。
+     * 请求体只有 version（裁决 20261013 候选 B）；营业执照硬门槛/状态闸/乐观锁全部在 Service 判定。
+     */
+    @PostMapping("/suppliers/{id}/submit")
+    @PreAuthorize("hasRole('STAFF')")
+    public ApiResponse<SupplierResponse> submit(@PathVariable Long id,
+                                                @RequestBody @Valid SupplierSubmitRequest request) {
+        return ApiResponse.success(supplierService.submit(id, request));
+    }
+
+    /**
+     * §2.2 POST /suppliers/{id}/audit — 准入审核决策（AUDITOR 专属）：
+     * APPROVE → NORMAL、REJECT → RETURNED，并在同一事务内连带批复该供应商全部 PENDING 资质。
+     * data 回传整态 SupplierResponse（新 version 供前端后续操作取值）。
+     */
+    @PostMapping("/suppliers/{id}/audit")
+    @PreAuthorize("hasRole('AUDITOR')")
+    public ApiResponse<SupplierResponse> audit(@PathVariable Long id,
+                                              @RequestBody @Valid SupplierAuditDecisionRequest request) {
+        return ApiResponse.success(supplierService.audit(id, request));
     }
 
     /** §1.5 DELETE /suppliers/{id} — 仅本人 DRAFT 逻辑删除，成功 data=null */

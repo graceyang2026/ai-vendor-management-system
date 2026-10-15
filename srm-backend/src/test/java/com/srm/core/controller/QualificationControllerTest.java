@@ -7,6 +7,7 @@ import com.srm.core.common.ErrorCode;
 import com.srm.core.common.GlobalExceptionHandler;
 import com.srm.core.dto.qualification.QualificationCreateRequest;
 import com.srm.core.dto.qualification.QualificationResponse;
+import com.srm.core.dto.qualification.QualificationReviewRequest;
 import com.srm.core.service.QualificationService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -29,6 +30,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -41,6 +43,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *    全部在 Controller 入参层一次拦下（40001 固定文案），非法入参不得触达 Service；
  * 2. QualificationResponse 13 字段物理 snake_case（附录 A2），expired/version 在位；
  * 3. 传输口径（用户裁决 2026-10-14）：业务错误维持 HTTP 200 + 响应体 code。
+ * 4.（模块二 §2.3 新增）PUT /qualifications/{id}/review：请求体三字段 action/review_comment/version
+ *    的物理 snake_case 绑定与入参层拦截边界——值域与版本号格式在入参层折 40001，
+ *    <b>version 缺失与 review_comment 条件必填必须放行到 Service</b>（并发语义/跨字段语义），
+ *    40302/40401/40901/40902 一律 HTTP 200 + body.code。
  *
  * 合法基线 body：effective_date=2026-01-01、expiry_date=2028-12-31。
  */
@@ -55,6 +61,11 @@ class QualificationControllerTest {
     private static final String DOC_TYPE_MSG = "资质类型不合法（仅支持 BUSINESS_LICENSE/OTHER）";
     private static final String FILE_URL_MSG = "资质文件地址不能为空";
     private static final String DATE_MSG = "日期格式不合法或失效日期早于生效日期";
+    /** §2.3 固定文案：40001 泛义 / 版本号格式 / 乐观锁冲突 / 驳回条件必填（契约 §2.3 L425-428 + §0 L36 注记） */
+    private static final String PARAM_INVALID_MSG = "参数校验失败";
+    private static final String VERSION_MSG = "版本号不合法（必须为正整数）";
+    private static final String VERSION_CONFLICT_MSG = "数据已被修改，请刷新后重试";
+    private static final String REJECT_COMMENT_MSG = "驳回时必须填写意见";
 
     @BeforeEach
     void setUp() {
@@ -256,5 +267,176 @@ class QualificationControllerTest {
         mockMvc.perform(get("/api/v1/suppliers/2002/qualifications"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(40401));
+    }
+
+    // ==================== §2.3 PUT /qualifications/{id}/review ====================
+
+    /** §2.3 合法请求体：字段名严格 action / review_comment / version（契约 §2.3 L393-400 样例） */
+    private static String reviewBody(String action, String reviewCommentJson, String versionJson) {
+        return "{"
+                + "\"action\":\"" + action + "\","
+                + "\"review_comment\":" + reviewCommentJson + ","
+                + "\"version\":" + versionJson
+                + "}";
+    }
+
+    private static QualificationResponse reviewedSample() {
+        return QualificationResponse.builder()
+                .id(501L)
+                .supplierId(1001L)
+                .docType("BUSINESS_LICENSE")
+                .fileUrl("/uploads/2026/10/license-abc.pdf")
+                .effectiveDate("2026-01-01")
+                .expiryDate("2028-12-31")
+                .status("REJECTED")
+                .version(2)
+                .expired(false)
+                .createdAt("2026-10-14T18:00:00")
+                .reviewedBy(3L)
+                .reviewedAt("2026-10-15T10:00:00")
+                .reviewComment("证照模糊无法辨识有效期，请重新上传。")
+                .build();
+    }
+
+    private void expectReviewValidationError(String bodyJson, String expectedMessage) throws Exception {
+        mockMvc.perform(put("/api/v1/qualifications/501/review")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(bodyJson))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(40001))
+                .andExpect(jsonPath("$.message").value(expectedMessage));
+        verify(qualificationService, never()).review(any(), any(QualificationReviewRequest.class));
+    }
+
+    @Test
+    void reviewValidBodyBindsSnakeCaseFieldsAndReturnsThirteenResponseFields() throws Exception {
+        when(qualificationService.review(eq(501L), any(QualificationReviewRequest.class)))
+                .thenReturn(reviewedSample());
+
+        mockMvc.perform(put("/api/v1/qualifications/501/review")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(reviewBody("REJECT", "\"证照模糊无法辨识有效期，请重新上传。\"", "1")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.id").value(501))
+                .andExpect(jsonPath("$.data.supplier_id").value(1001))
+                .andExpect(jsonPath("$.data.doc_type").value("BUSINESS_LICENSE"))
+                .andExpect(jsonPath("$.data.file_url").value("/uploads/2026/10/license-abc.pdf"))
+                .andExpect(jsonPath("$.data.effective_date").value("2026-01-01"))
+                .andExpect(jsonPath("$.data.expiry_date").value("2028-12-31"))
+                .andExpect(jsonPath("$.data.status").value("REJECTED"))
+                .andExpect(jsonPath("$.data.version").value(2))
+                .andExpect(jsonPath("$.data.expired").value(false))
+                .andExpect(jsonPath("$.data.created_at").value("2026-10-14T18:00:00"))
+                .andExpect(jsonPath("$.data.reviewed_by").value(3))
+                .andExpect(jsonPath("$.data.reviewed_at").value("2026-10-15T10:00:00"))
+                .andExpect(jsonPath("$.data.review_comment")
+                        .value("证照模糊无法辨识有效期，请重新上传。"));
+
+        ArgumentCaptor<QualificationReviewRequest> captor =
+                ArgumentCaptor.forClass(QualificationReviewRequest.class);
+        verify(qualificationService).review(eq(501L), captor.capture());
+        // 入参叫 action（不是 decision）、review_comment（无复数 s）——契约裁决 2026-10-12 定稿
+        assertThat(captor.getValue().getAction()).isEqualTo("REJECT");
+        assertThat(captor.getValue().getReviewComment()).isEqualTo("证照模糊无法辨识有效期，请重新上传。");
+        assertThat(captor.getValue().getVersion()).isEqualTo(1);
+    }
+
+    @Test
+    void reviewApproveWithoutCommentPassesInputLayerBecauseCommentIsConditionallyRequired() throws Exception {
+        // APPROVE 分支 review_comment 可省：条件必填只能由 Service 结合 action 判定，入参层不得一刀切 @NotBlank
+        when(qualificationService.review(eq(501L), any(QualificationReviewRequest.class)))
+                .thenReturn(reviewedSample());
+
+        mockMvc.perform(put("/api/v1/qualifications/501/review")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(reviewBody("APPROVE", "null", "1")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0));
+
+        ArgumentCaptor<QualificationReviewRequest> captor =
+                ArgumentCaptor.forClass(QualificationReviewRequest.class);
+        verify(qualificationService).review(eq(501L), captor.capture());
+        assertThat(captor.getValue().getAction()).isEqualTo("APPROVE");
+        assertThat(captor.getValue().getReviewComment()).isNull();
+    }
+
+    @Test
+    void reviewActionOutsideEnumIsRejectedAtInputLayerWith40001() throws Exception {
+        expectReviewValidationError(reviewBody("PASS", "\"意见\"", "1"), PARAM_INVALID_MSG);
+        expectReviewValidationError(reviewBody("approve", null, "1"), PARAM_INVALID_MSG);
+        expectReviewValidationError(reviewBody("APPROVED", null, "1"), PARAM_INVALID_MSG);
+        expectReviewValidationError(reviewBody("", null, "1"), PARAM_INVALID_MSG);
+    }
+
+    @Test
+    void reviewMissingActionIsRejectedAtInputLayerWith40001() throws Exception {
+        expectReviewValidationError("{\"review_comment\":\"意见\",\"version\":1}", PARAM_INVALID_MSG);
+    }
+
+    @Test
+    void reviewNonPositiveVersionIsRejectedAtInputLayerWith40001() throws Exception {
+        // 0/负数属格式非法（入参层）；缺失则属并发语义，见下一用例 → 两码必须分层
+        expectReviewValidationError(reviewBody("APPROVE", null, "0"), VERSION_MSG);
+        expectReviewValidationError(reviewBody("APPROVE", null, "-3"), VERSION_MSG);
+    }
+
+    @Test
+    void reviewMissingVersionIsPassedThroughToServiceBecauseItIsConcurrencySemantics() throws Exception {
+        when(qualificationService.review(eq(501L), any(QualificationReviewRequest.class)))
+                .thenThrow(new BusinessException(ErrorCode.OPTIMISTIC_LOCK_CONFLICT, VERSION_CONFLICT_MSG));
+
+        mockMvc.perform(put("/api/v1/qualifications/501/review")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"action\":\"APPROVE\",\"review_comment\":null}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(40901));
+
+        ArgumentCaptor<QualificationReviewRequest> captor =
+                ArgumentCaptor.forClass(QualificationReviewRequest.class);
+        verify(qualificationService).review(eq(501L), captor.capture());
+        assertThat(captor.getValue().getVersion()).isNull();
+    }
+
+    @Test
+    void reviewRejectWithoutCommentKeepsContractMessageThroughServiceLayer() throws Exception {
+        // 条件必填属 Service 判定：入参层放行、Service 折 40001，文案逐字照契约 §2.3 L425
+        when(qualificationService.review(eq(501L), any(QualificationReviewRequest.class)))
+                .thenThrow(new BusinessException(ErrorCode.VALIDATION_FAILED, REJECT_COMMENT_MSG));
+
+        mockMvc.perform(put("/api/v1/qualifications/501/review")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(reviewBody("REJECT", "null", "1")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(40001))
+                .andExpect(jsonPath("$.message").value(REJECT_COMMENT_MSG));
+    }
+
+    @Test
+    void reviewBusinessErrorsKeepHttp200WithBodyCode() throws Exception {
+        when(qualificationService.review(eq(777L), any(QualificationReviewRequest.class)))
+                .thenThrow(new BusinessException(ErrorCode.STATUS_NOT_ALLOWED, "当前状态不允许该操作"));
+        mockMvc.perform(put("/api/v1/qualifications/777/review")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(reviewBody("APPROVE", null, "1")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(40302));
+
+        when(qualificationService.review(eq(888L), any(QualificationReviewRequest.class)))
+                .thenThrow(new BusinessException(ErrorCode.NOT_FOUND, "资源不存在"));
+        mockMvc.perform(put("/api/v1/qualifications/888/review")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(reviewBody("APPROVE", null, "1")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(40401));
+
+        when(qualificationService.review(eq(999L), any(QualificationReviewRequest.class)))
+                .thenThrow(new BusinessException(ErrorCode.DUPLICATE_IN_PROGRESS, "业务冲突"));
+        mockMvc.perform(put("/api/v1/qualifications/999/review")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(reviewBody("APPROVE", null, "1")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(40902))
+                .andExpect(jsonPath("$.message").value("业务冲突"));
     }
 }

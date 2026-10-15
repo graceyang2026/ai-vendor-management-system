@@ -8,9 +8,9 @@
  * 后端本批恒回 null（SupplierResponse.java 类注释明示），前端展示层必须 null 容错，类型标 nullable 并注明回填期。
  */
 
-import type { SupplierStatusCode, SupplierTypeCode } from '@/constants/auditDictionary'
+import type { DecisionCode, SupplierStatusCode, SupplierTypeCode } from '@/constants/auditDictionary'
 
-export type { SupplierStatusCode, SupplierTypeCode }
+export type { DecisionCode, SupplierStatusCode, SupplierTypeCode }
 
 /** 归档绩效评级码（docs/api-spec.md §2 SupplierResponse.latest_performance_grade：'A'|'B'|'C'|'D'）。 */
 export type PerformanceGradeCode = 'A' | 'B' | 'C' | 'D'
@@ -111,4 +111,28 @@ export interface SupplierFormModel {
   remark: string
   effective_date: string
   expiry_date: string
+}
+
+/**
+ * SupplierSubmitRequest（契约 §2.1 请求体，裁决 20261013 候选 B：**仅 version 一字段**；
+ * docs/api-spec.md §2 对象定义 L152-154；后端实文 dto/supplier/SupplierSubmitRequest.java
+ * —— @JsonProperty("version") Integer，刻意不加 @NotNull：缺失/不匹配一律 40901（不是 40001））。
+ * 状态迁移 DRAFT/RETURNED → PENDING_REVIEW，前置硬门槛=名下至少一份未过期 BUSINESS_LICENSE，否则 40001。
+ */
+export interface SupplierSubmitRequest {
+  /** 取 SupplierResponse.version（§1.3 列表行或 §1.4 详情）；缺失或不匹配 40901 */
+  version: number
+}
+
+/**
+ * SupplierAuditDecisionRequest（契约 §2.2 请求体三字段；后端实文
+ * dto/supplier/SupplierAuditDecisionRequest.java：version / decision / comment 全 @JsonProperty snake_case）。
+ * decision 码值唯一合法取值见 constants/auditDictionary.DECISION（传码显中文，页面不写串值）；
+ * comment 仅 decision=REJECT 时必填（后端 Service 折 40001「驳回时必须填写意见」，入参层不校验）。
+ * 同事务连带批复该供应商全部 PENDING 资质（APPROVE→APPROVED / REJECT→REJECTED），准入期不调 §2.3。
+ */
+export interface SupplierAuditDecisionRequest {
+  version: number
+  decision: DecisionCode
+  comment?: string
 }

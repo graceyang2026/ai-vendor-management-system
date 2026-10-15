@@ -14,8 +14,21 @@ public interface AuditLogService {
     /**
      * 【核心隔离铁律】写入审计日志。本方法绝不向调用方抛出任何异常：
      * 即使 DB 插入失败/超时也只记系统 error 日志，禁止导致主业务事务回滚或报错。
+     *
+     * <p>本重载不写 {@code supplier_id} 冗余列（等价于传 null）；<b>供应商业务域禁止使用本重载</b>，
+     * 必须走 {@link #record(EntityType, Long, Long, UserPrincipal, String, String, String, AuditResult, String)}
+     * 显式带上归属供应商，否则 §0 规则 C 行级隔离对该条留痕失效（api-spec §0 DDL 增量 ②）。
      */
     void record(EntityType entityType, Long entityId, UserPrincipal operator,
+                String action, String oldStatus, String newStatus,
+                AuditResult result, String comment);
+
+    /**
+     * 写入审计日志并冗余归属供应商 ID（裁决 20261012 DDL②：§2.2 连带批复 / §2.3 资质单独审批 /
+     * §2.4 提申请 / §2.6 终审的留痕都必须写 supplier_id，一码多域靠 entity_type 区分）。
+     * 隔离铁律同上：本方法绝不上抛。
+     */
+    void record(EntityType entityType, Long entityId, Long supplierId, UserPrincipal operator,
                 String action, String oldStatus, String newStatus,
                 AuditResult result, String comment);
 

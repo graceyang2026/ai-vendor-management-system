@@ -469,3 +469,201 @@ export const BUSINESS_ACTION_OPTIONS: ActionOption[] = toActionOptions([
 
 /** 业务员（STAFF）自身可触发的动作：后端当前仅 SUBMIT，档案 CRUD 等动作属后端枚举扩展事项；用户域四码属 ADMIN，不进本筛选。 */
 export const STAFF_ACTION_OPTIONS: ActionOption[] = toActionOptions([AUDIT_ACTION.SUBMIT])
+
+/* ============== 模块二 · 状态机流转码值与文案（F1/F2/F3 新增，传码显中文分层） ============== */
+
+/**
+ * 决策/裁决二码 APPROVE / REJECT —— §2.2 准入审核 `decision`、§2.3 资质审批 `action`、
+ * §2.6 生命周期终审 `decision` 三接口共用同一码值（"传码"的唯一合法取值）。
+ * 码值权威源（实文核对 2026-10-15）：后端 dto/supplier/SupplierValidationPatterns.java
+ * `DECISION_REGEX = "^(APPROVE|REJECT)$"`；QualificationValidationPatterns.ACTION_REGEX 与
+ * LifecycleValidationPatterns.DECISION_REGEX 均以"常量引用"方式复用该单一源，
+ * 前端同构：三处入参一律引用本表，禁止每个页面各写一套码。
+ * 注意：本码值是**接口入参**，与审计动作码 AUDIT_*、REVIEW_*、DECISION_*（后端 AuditAction）
+ * 是两个层（契约 §2.3 L384「术语区分」），不得把裸 APPROVE 当审计码消费。
+ */
+export const DECISION = {
+  APPROVE: 'APPROVE',
+  REJECT: 'REJECT',
+} as const
+export type DecisionCode = (typeof DECISION)[keyof typeof DECISION]
+
+const DECISION_LABEL_CN: Record<DecisionCode, string> = {
+  [DECISION.APPROVE]: '通过',
+  [DECISION.REJECT]: '驳回',
+}
+
+/** 决策中文：空值给 '-'，未知码原样回显（与其余 getXxxLabel 兜底口径一致）。 */
+export function getDecisionLabel(code?: DecisionCode | string | null): string {
+  if (!code) return '-'
+  return DECISION_LABEL_CN[code as DecisionCode] ?? code
+}
+
+export interface DecisionOption {
+  value: DecisionCode
+  label: string
+}
+
+/** §2.2 准入审核签署单选项（原型文案口径 + 契约状态语义：APPROVE→NORMAL、REJECT→RETURNED）。 */
+export const ADMISSION_DECISION_OPTIONS: DecisionOption[] = [
+  { value: DECISION.APPROVE, label: '审核通过（准入为正式合作供应商）' },
+  { value: DECISION.REJECT, label: '审核驳回（退回给业务员修正）' },
+]
+
+/** §2.3 存续期资质审批单选项（入参字段名是 action，码值同 DECISION 两码）。 */
+export const QUALIFICATION_REVIEW_OPTIONS: DecisionOption[] = [
+  { value: DECISION.APPROVE, label: '审批通过（新件置为现行有效）' },
+  { value: DECISION.REJECT, label: '审批驳回（旧件保持生效位）' },
+]
+
+/**
+ * LifecycleRequestType —— 生命周期申请三码（docs/api-spec.md §3）。
+ * 码值权威源（实文核对 2026-10-15）：后端 dto/lifecycle/LifecycleValidationPatterns.java
+ * `TYPE_REGEX = "^(SUSPEND|RESUME|ELIMINATE)$"`（中文/小写不接受）。
+ */
+export const LIFECYCLE_REQUEST_TYPE = {
+  SUSPEND: 'SUSPEND',
+  RESUME: 'RESUME',
+  ELIMINATE: 'ELIMINATE',
+} as const
+export type LifecycleRequestTypeCode =
+  (typeof LIFECYCLE_REQUEST_TYPE)[keyof typeof LIFECYCLE_REQUEST_TYPE]
+
+/** LifecycleRequestStatus 码类型（码值表 LIFECYCLE_REQUEST_STATUS 既有，中文按 entity_type 分流）。 */
+export type LifecycleRequestStatusCode =
+  (typeof LIFECYCLE_REQUEST_STATUS)[keyof typeof LIFECYCLE_REQUEST_STATUS]
+
+const LIFECYCLE_TYPE_LABEL_CN: Record<LifecycleRequestTypeCode, string> = {
+  [LIFECYCLE_REQUEST_TYPE.SUSPEND]: '停用申请',
+  [LIFECYCLE_REQUEST_TYPE.RESUME]: '恢复申请',
+  [LIFECYCLE_REQUEST_TYPE.ELIMINATE]: '淘汰申请',
+}
+
+/** 申请类型中文（空值 '-'、未知码原样回显）。 */
+export function getLifecycleTypeLabel(code?: string | null): string {
+  if (!code) return '-'
+  return LIFECYCLE_TYPE_LABEL_CN[code as LifecycleRequestTypeCode] ?? code
+}
+
+/**
+ * APPROVE 后的供应商目标状态（契约 §2.6 L511 + api-spec §3 接口表：
+ * SUSPEND→SUSPENDED、RESUME→NORMAL、ELIMINATE→ELIMINATED 终态；REJECT 不改供应商状态）。
+ */
+const LIFECYCLE_TARGET_STATUS: Record<LifecycleRequestTypeCode, SupplierStatusCode> = {
+  [LIFECYCLE_REQUEST_TYPE.SUSPEND]: SUPPLIER_STATUS.SUSPENDED,
+  [LIFECYCLE_REQUEST_TYPE.RESUME]: SUPPLIER_STATUS.NORMAL,
+  [LIFECYCLE_REQUEST_TYPE.ELIMINATE]: SUPPLIER_STATUS.ELIMINATED,
+}
+
+/** 目标状态中文（复用供应商域 SUPPLIER_STATUS_LABEL，不另建第二套状态文案）。 */
+export function getLifecycleTargetStatusLabel(code?: string | null): string {
+  if (!code) return '-'
+  const target = LIFECYCLE_TARGET_STATUS[code as LifecycleRequestTypeCode]
+  if (!target) return '-'
+  return SUPPLIER_STATUS_LABEL[target]
+}
+
+/**
+ * type-供应商状态门槛表（契约 §2.4 L441-443：SUSPEND 仅 NORMAL、RESUME 仅 SUSPENDED、
+ * ELIMINATE 仅 NORMAL/SUSPENDED、ELIMINATED 终态禁建任何申请）。
+ * <b>用途边界</b>：仅供前端提前禁用/隐藏入口（体验层），不是前端状态机——真正的门槛判定
+ * 在后端 LifecycleRequestServiceImpl（不符 40302）；后端改门槛时本表须同步，
+ * 但前端据本表"放行"的请求仍以服务端校验为最终事实源。
+ */
+const LIFECYCLE_TYPE_ALLOWED_STATUS: Record<LifecycleRequestTypeCode, SupplierStatusCode[]> = {
+  [LIFECYCLE_REQUEST_TYPE.SUSPEND]: [SUPPLIER_STATUS.NORMAL],
+  [LIFECYCLE_REQUEST_TYPE.RESUME]: [SUPPLIER_STATUS.SUSPENDED],
+  [LIFECYCLE_REQUEST_TYPE.ELIMINATE]: [SUPPLIER_STATUS.NORMAL, SUPPLIER_STATUS.SUSPENDED],
+}
+
+/** 该申请类型在当前供应商状态下是否值得提供入口（终态 ELIMINATED 对三类型一律 false）。 */
+export function isLifecycleTypeAllowed(type: LifecycleRequestTypeCode, supplierStatus: string): boolean {
+  return (LIFECYCLE_TYPE_ALLOWED_STATUS[type] ?? []).includes(supplierStatus as SupplierStatusCode)
+}
+
+export interface LifecycleTypeOption {
+  value: LifecycleRequestTypeCode
+  label: string
+}
+
+/** 业务员提申请弹窗的类型下拉：按供应商当前状态过滤可用类型（不可用类型不出现在选项里）。 */
+export function getLifecycleTypeOptionsForStatus(supplierStatus: string): LifecycleTypeOption[] {
+  return (Object.keys(LIFECYCLE_REQUEST_TYPE) as LifecycleRequestTypeCode[])
+    .filter((value) => isLifecycleTypeAllowed(value, supplierStatus))
+    .map((value) => ({ value, label: LIFECYCLE_TYPE_LABEL_CN[value] }))
+}
+
+/**
+ * §2.6 终审文案按 type 映射决策语义（任务卡 F2.2）：
+ * SUSPEND→批准停用、RESUME→批准恢复合作、ELIMINATE→批准淘汰；驳回侧同型分流。
+ * 提交报文仍只传 DECISION 两码，本函数只出展示文案。
+ */
+export function getLifecycleApproveLabel(type?: string | null): string {
+  switch (type) {
+    case LIFECYCLE_REQUEST_TYPE.SUSPEND:
+      return '批准停用'
+    case LIFECYCLE_REQUEST_TYPE.RESUME:
+      return '批准恢复合作'
+    case LIFECYCLE_REQUEST_TYPE.ELIMINATE:
+      return '批准淘汰'
+    default:
+      return getDecisionLabel(DECISION.APPROVE)
+  }
+}
+
+export function getLifecycleRejectLabel(type?: string | null): string {
+  switch (type) {
+    case LIFECYCLE_REQUEST_TYPE.SUSPEND:
+      return '驳回停用申请'
+    case LIFECYCLE_REQUEST_TYPE.RESUME:
+      return '驳回恢复申请'
+    case LIFECYCLE_REQUEST_TYPE.ELIMINATE:
+      return '驳回淘汰申请'
+    default:
+      return getDecisionLabel(DECISION.REJECT)
+  }
+}
+
+/** §2.6 终审决策单选项（value 仍是 APPROVE/REJECT 两码，label 按申请类型分流中文）。 */
+export function getLifecycleDecisionOptions(type?: string | null): DecisionOption[] {
+  return [
+    { value: DECISION.APPROVE, label: getLifecycleApproveLabel(type) },
+    { value: DECISION.REJECT, label: getLifecycleRejectLabel(type) },
+  ]
+}
+
+/**
+ * SupplierStatus 下拉选项（value=码，label=中文，顺序照状态机推进顺序）。
+ * 审核员「准入资质审核」状态筛选与业务员档案列表筛选共用，避免各页自码值数组双源。
+ */
+export interface SupplierStatusOption {
+  value: SupplierStatusCode
+  label: string
+}
+
+export const SUPPLIER_STATUS_OPTIONS: SupplierStatusOption[] = (
+  Object.keys(SUPPLIER_STATUS) as SupplierStatusCode[]
+).map((value) => ({ value, label: SUPPLIER_STATUS_LABEL[value] }))
+
+/**
+ * 申请类型的"动作名"（去掉「申请」后缀的动作词），仅用于业务员列表行按钮文案拼装。
+ * 与 LIFECYCLE_TYPE_LABEL_CN 同表同源（申请类型中文权威源仍是后端 TYPE_REGEX 三码），
+ * 单独建表是为了避免在组件里对字典文案做字符串截取（"停用申请".replace('申请','')）这种脆断实现。
+ */
+const LIFECYCLE_TYPE_ACTION_CN: Record<LifecycleRequestTypeCode, string> = {
+  [LIFECYCLE_REQUEST_TYPE.SUSPEND]: '停用',
+  [LIFECYCLE_REQUEST_TYPE.RESUME]: '恢复',
+  [LIFECYCLE_REQUEST_TYPE.ELIMINATE]: '淘汰',
+}
+
+/**
+ * 列表行「生命周期申请」按钮文案：按供应商当前状态拼装可用动作（任务卡 F3.2 口径
+ * NORMAL→"停用/淘汰申请"、SUSPENDED→"恢复/淘汰申请"）；
+ * 无可申请类型（终态 ELIMINATED 等）返回空串，调用方据此隐藏/禁用入口。
+ */
+export function getLifecycleActionLabelForStatus(supplierStatus: string): string {
+  const actions = (Object.keys(LIFECYCLE_REQUEST_TYPE) as LifecycleRequestTypeCode[])
+    .filter((value) => isLifecycleTypeAllowed(value, supplierStatus))
+    .map((value) => LIFECYCLE_TYPE_ACTION_CN[value])
+  return actions.length > 0 ? `${actions.join('/')}申请` : ''
+}

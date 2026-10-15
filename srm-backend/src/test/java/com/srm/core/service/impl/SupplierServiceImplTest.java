@@ -9,13 +9,17 @@ import com.srm.core.common.BusinessException;
 import com.srm.core.common.ErrorCode;
 import com.srm.core.common.PageResult;
 import com.srm.core.common.enums.Role;
+import com.srm.core.dto.supplier.SupplierAuditDecisionRequest;
 import com.srm.core.dto.supplier.SupplierCreateRequest;
 import com.srm.core.dto.supplier.SupplierResponse;
 import com.srm.core.dto.supplier.SupplierUpdateRequest;
 import com.srm.core.entity.Supplier;
+import com.srm.core.entity.SupplierQualification;
 import com.srm.core.entity.User;
 import com.srm.core.mapper.SupplierMapper;
+import com.srm.core.mapper.SupplierQualificationMapper;
 import com.srm.core.mapper.UserMapper;
+import com.srm.core.service.AuditLogService;
 import com.srm.core.security.CurrentUserProvider;
 import com.srm.core.security.RoleGuard;
 import com.srm.core.security.UserPrincipal;
@@ -66,6 +70,14 @@ class SupplierServiceImplTest {
     @Mock
     private UserMapper userMapper;
 
+    /** §2.2 连带批复与 §2.1 硬门槛的资质侧依赖（模块二新增构造参数） */
+    @Mock
+    private SupplierQualificationMapper qualificationMapper;
+
+    /** 关键操作留痕依赖：单测层只验"写没写、写什么"，写入本体由 AuditLogServiceImplTest 覆盖 */
+    @Mock
+    private AuditLogService auditLogService;
+
     @Mock
     private CurrentUserProvider currentUserProvider;
 
@@ -75,13 +87,16 @@ class SupplierServiceImplTest {
     static void initMybatisPlusTableInfo() {
         TableInfoHelper.initTableInfo(
                 new MapperBuilderAssistant(new MybatisConfiguration(), ""), Supplier.class);
+        // §2.2 连带批复要在单测层构造 LambdaQueryWrapper<SupplierQualification>，MP 需先初始化表信息
+        TableInfoHelper.initTableInfo(
+                new MapperBuilderAssistant(new MybatisConfiguration(), ""), SupplierQualification.class);
     }
 
     @BeforeEach
     void setUp() {
         // RoleGuard 用真实实例包裹 mock provider：错误码语义（40301/40302）走生产同一实现
-        service = new SupplierServiceImpl(supplierMapper, userMapper,
-                new RoleGuard(currentUserProvider), currentUserProvider);
+        service = new SupplierServiceImpl(supplierMapper, userMapper, qualificationMapper,
+                auditLogService, new RoleGuard(currentUserProvider), currentUserProvider);
     }
 
     // ==================== 夹具 ====================
@@ -885,5 +900,75 @@ class SupplierServiceImplTest {
         assertThat(saved.getExpiryDate()).isEqualTo(LocalDate.of(2029, 3, 1));
         assertThat(resp.getType()).isEqualTo("DISTRIBUTOR");
         assertThat(resp.getContactEmail()).isEqualTo("limei@example.com");
+    }
+
+    // ==================== §2.2 audit：模块二防御分支（补齐 JaCoCo 报出的两条未触达分支） ====================
+
+    private static SupplierAuditDecisionRequest auditRequest(String decision, String comment, Integer version) {
+        SupplierAuditDecisionRequest req = new SupplierAuditDecisionRequest();
+        req.setDecision(decision);
+        req.setComment(comment);
+        req.setVersion(version);
+        return req;
+    }
+
+    private static SupplierQualification pendingQualification(String docType) {
+        SupplierQualification q = new SupplierQualification();
+        q.setId(7L);
+        q.setSupplierId(1L);
+        q.setDocType(docType);
+        q.setFileUrl("/uploads/2026/10/" + docType.toLowerCase() + ".pdf");
+        q.setEffectiveDate(LocalDate.of(2026, 1, 1));
+        q.setExpiryDate(LocalDate.of(2028, 12, 31));
+        q.setStatus("PENDING");
+        q.setVersion(1);
+        q.setDeleted(0);
+        return q;
+    }
+
+    /**
+     * §2.2 APPROVE 连带批复资质时撞 uk_supplier_approved_doc（生效位并发竞态）：
+     * DuplicateKeyException 必须转译成 40902 契约文案，绝不冒 50001、绝不泄露 SQL；
+     * 且整笔事务回滚意味着审核留痕不得落库。
+     */
+    @Test
+    void auditApproveTranslatesDuplicateKeyOnCascadedQualificationTo40902() {
+        when(currentUserProvider.require()).thenReturn(auditor());
+        when(supplierMapper.selectById(1L))
+                .thenReturn(existing(1L, "PENDING_REVIEW", "91330100MA27XXXX8X", 2, 2L));
+        when(supplierMapper.updateById(any(Supplier.class))).thenReturn(1);
+        when(qualificationMapper.selectList(any()))
+                .thenReturn(List.of(pendingQualification("BUSINESS_LICENSE")));
+        when(qualificationMapper.updateById(any(SupplierQualification.class)))
+                .thenThrow(new DuplicateKeyException(
+                        "Duplicate entry '1_BUSINESS_LICENSE' for key 'uk_supplier_approved_doc'"));
+
+        assertThatThrownBy(() -> service.audit(1L, auditRequest("APPROVE", null, 2)))
+                .isInstanceOfSatisfying(BusinessException.class, ex -> {
+                    assertThat(ex.getCode()).isEqualTo(ErrorCode.DUPLICATE_IN_PROGRESS);
+                    assertThat(ex.getMessage()).isEqualTo("业务冲突");
+                    assertThat(ex.getMessage())
+                            .doesNotContain("uk_supplier_approved_doc", "Duplicate entry", "SQL");
+                });
+
+        // 连带批复失败 → 主表那一跳一并回滚，审核留痕绝不能先落库
+        verifyNoInteractions(auditLogService);
+    }
+
+    /** 绕过 Controller 入参层直调 Service：未知决策码值不得默认当成 REJECT，一律 40001 且不触达任何写库 */
+    @Test
+    void auditWithUnknownDecisionCodeRejected40001AtServiceLayer() {
+        when(currentUserProvider.require()).thenReturn(auditor());
+        when(supplierMapper.selectById(1L))
+                .thenReturn(existing(1L, "PENDING_REVIEW", "91330100MA27XXXX8X", 2, 2L));
+
+        assertThatThrownBy(() -> service.audit(1L, auditRequest("PASS", "随意意见", 2)))
+                .isInstanceOfSatisfying(BusinessException.class, ex -> {
+                    assertThat(ex.getCode()).isEqualTo(ErrorCode.VALIDATION_FAILED);
+                    assertThat(ex.getMessage()).isEqualTo("参数校验失败");
+                });
+
+        verify(supplierMapper, never()).updateById(any(Supplier.class));
+        verifyNoInteractions(qualificationMapper, auditLogService);
     }
 }

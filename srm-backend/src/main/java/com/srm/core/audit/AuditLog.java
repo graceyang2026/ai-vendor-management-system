@@ -23,6 +23,15 @@ public class AuditLog {
 
     private Long entityId;
 
+    /**
+     * 归属供应商冗余列（api-spec §0「目标态 DDL 增量」②，裁决 20261012 已落地 schema.sql L203）。
+     * 写日志时由业务侧冗余写入：{@code entity_type=SUPPLIER} 时等于 entity_id；
+     * {@code SUPPLIER_QUALIFICATION}/{@code LIFECYCLE_REQUEST} 等域写其归属供应商 ID，
+     * 使 §0 规则 C 行级隔离（STAFF 只见本人动作）能用单一 supplier_id 条件覆盖非 SUPPLIER 实体留痕；
+     * 无归属供应商的留痕（如 USER 域）保持 NULL。
+     */
+    private Long supplierId;
+
     private Long operatorId;
 
     /** Role 枚举的 name()，如 ADMIN/STAFF/AUDITOR */

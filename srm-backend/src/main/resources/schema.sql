@@ -168,6 +168,7 @@ CREATE TABLE IF NOT EXISTS lifecycle_request (
     type             VARCHAR(20)   NOT NULL                COMMENT '申请类型',
     reason           VARCHAR(1000) NOT NULL                COMMENT '申请原因',
     status           VARCHAR(20)   NOT NULL DEFAULT 'PENDING' COMMENT '申请状态',
+    version          INT           NOT NULL DEFAULT 1         COMMENT '乐观锁版本（DDL⑤ 裁决 20261013 候选 A：补齐④同族三表口径 DEFAULT 1；#17 LifecycleDecisionRequest.version 唯一取值源，缺失则 40901 无落库基础）',
     applied_by       BIGINT        NOT NULL                COMMENT '申请人',
     applied_at       DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '申请时间',
     decided_by       BIGINT        NULL                    COMMENT '审核人',

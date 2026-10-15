@@ -58,3 +58,22 @@ export const SUPPLIER_FIELD_BY_MESSAGE: Record<string, keyof SupplierFormModel> 
   [SUPPLIER_VALIDATION.CONTACT_EMAIL_MSG]: 'contact_email',
   [SUPPLIER_VALIDATION.DATE_MSG]: 'expiry_date',
 }
+
+/**
+ * 模块二（状态机流转 §2.1~§2.6）40001 固定文案表。
+ * 权威源（实文核对 2026-10-15）：后端 dto/supplier/SupplierValidationPatterns.java 是模块二校验
+ * 常量的唯一来源（类注释明示"模块二沿用本类"），§2.3 QualificationValidationPatterns 与
+ * §2.4/§2.6 LifecycleValidationPatterns 均以常量引用方式复用 PARAM_INVALID_MSG / REJECT_COMMENT_MSG /
+ * DECISION_REGEX，前端同构复用本文件，禁止每个弹窗各写一套串值。
+ * - PARAM_INVALID_MSG：枚举码值非法 / 必填缺失这类**格式**失败的泛义文案（§2.4 reason、§2.6 decision）；
+ * - REJECT_COMMENT_MSG：§2.2 准入审核与 §2.3 资质审批"驳回意见条件必填"的服务端文案（Service 层判定）；
+ * - VERSION_INVALID_MSG：version 为 0/负数时的入参层文案（三枚 DecisionRequest/ReviewRequest 的 @Min(1)）；
+ * - LICENSE_REQUIRED_MSG：§2.1 送审硬门槛（后端 SupplierServiceImpl.MSG_LICENSE_REQUIRED），
+ *   送审确认框前置提示用，真判定仍在后端（无有效执照回 40001）。
+ */
+export const MODULE2_VALIDATION = {
+  PARAM_INVALID_MSG: '参数校验失败',
+  REJECT_COMMENT_MSG: '驳回时必须填写意见',
+  VERSION_INVALID_MSG: '版本号不合法（必须为正整数）',
+  LICENSE_REQUIRED_MSG: '请先上传有效期内的营业执照',
+} as const

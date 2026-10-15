@@ -45,15 +45,29 @@ public class AuditLogServiceImpl implements AuditLogService {
      * 【核心隔离铁律】整个写入用 try-catch 完全包裹：
      * 任何 Exception（DB 插入失败、连接超时等）只打 error 日志，
      * 绝对禁止向上抛出，防止影响审核/提交/决策等主业务事务。
+     * 两个重载共用同一实现体，铁律对二者同等成立。
      */
     @Override
     public void record(EntityType entityType, Long entityId, UserPrincipal operator,
+                       String action, String oldStatus, String newStatus,
+                       AuditResult result, String comment) {
+        // 无归属供应商的老调用点（USER 域等）保持原语义：supplier_id 落 NULL
+        record(entityType, entityId, null, operator, action, oldStatus, newStatus, result, comment);
+    }
+
+    /**
+     * 带 supplier_id 冗余列的写入（裁决 20261012 DDL②）：供应商业务域四张写接口
+     * （§2.1 提交、§2.2 准入审核连带、§2.3 资质单独审批、§2.4/§2.6 生命周期）必须走本方法。
+     */
+    @Override
+    public void record(EntityType entityType, Long entityId, Long supplierId, UserPrincipal operator,
                        String action, String oldStatus, String newStatus,
                        AuditResult result, String comment) {
         try {
             AuditLog auditLog = new AuditLog();
             auditLog.setEntityType(entityType == null ? null : entityType.name());
             auditLog.setEntityId(entityId);
+            auditLog.setSupplierId(supplierId);
             if (operator != null) {
                 auditLog.setOperatorId(operator.getId());
                 auditLog.setOperatorRole(operator.getRole() == null ? null : operator.getRole().name());
