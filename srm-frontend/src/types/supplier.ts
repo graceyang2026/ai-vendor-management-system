@@ -8,12 +8,20 @@
  * 后端本批恒回 null（SupplierResponse.java 类注释明示），前端展示层必须 null 容错，类型标 nullable 并注明回填期。
  */
 
-import type { DecisionCode, SupplierStatusCode, SupplierTypeCode } from '@/constants/auditDictionary'
+import type {
+  DecisionCode,
+  PerformanceGradeCode,
+  SupplierStatusCode,
+  SupplierTypeCode,
+} from '@/constants/auditDictionary'
 
-export type { DecisionCode, SupplierStatusCode, SupplierTypeCode }
-
-/** 归档绩效评级码（docs/api-spec.md §2 SupplierResponse.latest_performance_grade：'A'|'B'|'C'|'D'）。 */
-export type PerformanceGradeCode = 'A' | 'B' | 'C' | 'D'
+/**
+ * 码值类型透传（单一权威源 = constants/auditDictionary 后端枚举同源表）。
+ * PerformanceGradeCode 自模块三 F1 起改为字典 PERFORMANCE_GRADE 派生
+ * （本文件原 'A' | 'B' | 'C' | 'D' 字面量定义已删除，杜绝双源；
+ * 口径来源 docs/api-spec.md §4.1 评级映射 + SupplierResponse.latest_performance_grade）。
+ */
+export type { DecisionCode, PerformanceGradeCode, SupplierStatusCode, SupplierTypeCode }
 
 /**
  * SupplierResponse（附录 A1，20 字段全量，物理 snake_case；

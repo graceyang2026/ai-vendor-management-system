@@ -62,6 +62,9 @@ import java.util.stream.Collectors;
  *   "ADMIN 例外" 措辞早于该裁决，以裁决为准）。写操作不受本放宽影响：AUDITOR/ADMIN 仍只读（40301）。
  * - <b>派生字段归二期</b>（用户裁决 2026-10-14 16:15）：business_license_url /
  *   latest_performance_grade / risk_warning 恒 null，本类不做任何派生计算。
+ *   注（2026-10-15 模块三落地）：后两枚的<b>写侧</b>已由绩效 §3.3 归档联动回写落库，
+ *   本类的<b>读侧仍按原裁决保持 null</b>（未开启"抄存量列值当派生结果"的口径），
+ *   两处裁决的张力已留痕上报待人类复核，本类不自擅放宽。
  * - <b>§1.1–§1.5 不落 AuditLog</b>（同一裁决）：契约未要求留痕，AuditAction 维持 11 码不变；
  *   模块二 §2.1/§2.2 则<b>必须</b>留痕（契约 §2.1 L297、§2.2 L354），并冗余写 supplier_id（DDL②）。
  *

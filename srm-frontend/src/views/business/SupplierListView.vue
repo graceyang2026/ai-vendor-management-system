@@ -8,6 +8,7 @@ import SupplierLogTable from '@/components/business/SupplierLogTable.vue'
 import SupplierHistoryLogTable from '@/components/business/SupplierHistoryLogTable.vue'
 import QualificationPanel from '@/components/business/QualificationPanel.vue'
 import LifecycleRequestDialog from '@/components/business/LifecycleRequestDialog.vue'
+import PerformanceEntryPanel from '@/components/business/PerformanceEntryPanel.vue'
 import { SUPPLIER_STATUS_CODES } from '@/types/supplier-log'
 import type { SupplierStatusCode } from '@/constants/auditDictionary'
 import {
@@ -818,20 +819,8 @@ async function handleLogout() {
             </div>
           </template>
 
-          <!-- 3. 量化绩效评价录入（占位，下一步实现） -->
-          <template v-else-if="currentView === 'perf-list'">
-            <div class="page-header">
-              <span class="page-title">供应商日常绩效评价记录 (历史留存可追溯)</span>
-            </div>
-            <el-alert
-              title="防篡改铁律：业务员仅录入客观履约事实明细，得分与评级由后端算分引擎硬编码计算，前端禁止提交或覆盖分数/评级。"
-              type="warning"
-              show-icon
-              :closable="false"
-              style="margin-bottom: 20px"
-            />
-            <el-empty description="量化绩效评价录入模块开发中（下一步实现）" />
-          </template>
+          <!-- 3. 量化绩效评价（模块三 F2：§3.4 记录列表 + §3.1/§3.2 客观事实录入与重提，页内子视图切换，不新增菜单项） -->
+          <PerformanceEntryPanel v-else-if="currentView === 'perf-list'" />
 
           <!-- 4. 操作与审批日志（本步实现） -->
           <SupplierLogTable v-else-if="currentView === 'log-list'" />

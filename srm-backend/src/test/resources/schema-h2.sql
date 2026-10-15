@@ -123,6 +123,59 @@ CREATE TABLE IF NOT EXISTS lifecycle_request (
 CREATE UNIQUE INDEX IF NOT EXISTS uk_supplier_active_lifecycle ON lifecycle_request (active_key);
 
 -- -------------------------------------------------------------
+-- 绩效评价表 performance_evaluation（模块三 §3.1–§3.5；列结构与主 schema.sql §4 逐列等价，24 列）
+-- 同上方三表的 H2 适配范式：
+--   1. fact_record：主 schema 为 MySQL JSON，H2 侧用 CLOB——H2 2.x 的 JSON 类型不接受
+--      JDBC 字符串直插（setString → 类型不匹配），而 MyBatis-Plus JacksonTypeHandler 的
+--      写入形态正是"对象→JSON 字符串→setString"，CLOB 与该形态兼容且不影响主 schema 的
+--      JSON 列语义（结构化读写全在 Java 层，SQL 侧不参与 JSON 函数运算）。
+--   2. active_period_key 生成列 + uk_supplier_active_period：仅 deleted=0 且
+--      status IN ('PENDING_REVIEW','RETURNED') 时取 CONCAT(supplier_id,'_',period_start,'_',period_end)，
+--      其余 NULL 不占位——同供应商同周期只允许一张在途评价单（已归档/已删除历史不阻塞新建）。
+--      MySQL 内联 UNIQUE KEY 改独立 CREATE UNIQUE INDEX（H2 唯一索引允许多行 NULL）。
+--      该列不对业务代码暴露（PerformanceEvaluation 实体不映射，与 tax_no_active/
+--      approved_key/active_key 同口径），DuplicateKeyException 由 Service 转译 40902。
+--   3. TINYINT(1) 布尔列（quality_exempt/risk_warning/deleted）维持 TINYINT 字面，
+--      与既有 supplier.risk_warning 同法（实体侧映射 Boolean）；DATETIME 改 TIMESTAMP；
+--      DECIMAL(5,2) 保留；去掉 ENGINE/CHARSET/COMMENT 方言与次要索引（H2 测试不建 idx_*）。
+-- -------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS performance_evaluation (
+    id               BIGINT        NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    supplier_id      BIGINT        NOT NULL,
+    period_start     DATE          NOT NULL,
+    period_end       DATE          NOT NULL,
+    mode             VARCHAR(20)   NOT NULL DEFAULT 'manual',
+    fact_record      CLOB          NOT NULL,
+    score_quality    DECIMAL(5, 2) NULL,
+    score_delivery   DECIMAL(5, 2) NULL,
+    score_price      DECIMAL(5, 2) NULL,
+    score_service    DECIMAL(5, 2) NULL,
+    score_compliance DECIMAL(5, 2) NULL,
+    total_score      DECIMAL(5, 2) NULL,
+    grade            VARCHAR(10)   NULL,
+    quality_exempt   TINYINT       NOT NULL DEFAULT 0,
+    risk_warning     TINYINT       NOT NULL DEFAULT 0,
+    status           VARCHAR(30)   NOT NULL DEFAULT 'PENDING_REVIEW',
+    created_by       BIGINT        NOT NULL,
+    reviewed_by      BIGINT        NULL,
+    reviewed_at      TIMESTAMP     NULL,
+    review_comment   VARCHAR(1000) NULL,
+    version          INT           NOT NULL DEFAULT 1,
+    created_at       TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at       TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    deleted          TINYINT       NOT NULL DEFAULT 0,
+    active_period_key VARCHAR(128) GENERATED ALWAYS AS (
+        CASE WHEN deleted = 0 AND status IN ('PENDING_REVIEW', 'RETURNED')
+             THEN CONCAT(supplier_id, '_', period_start, '_', period_end)
+             ELSE NULL
+        END
+    )
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_supplier_active_period ON performance_evaluation (active_period_key);
+CREATE INDEX IF NOT EXISTS idx_perf_supplier_period ON performance_evaluation (supplier_id, period_start, period_end);
+CREATE INDEX IF NOT EXISTS idx_perf_created_by ON performance_evaluation (created_by);
+
+-- -------------------------------------------------------------
 -- 审计日志表 audit_log（模块二全量留痕 + 集成测试断言依据；列结构与主 schema.sql §7 等价）
 -- 只插入不更新，故无 updated_at / deleted（与主 schema 同口径）；
 -- supplier_id 为裁决 20261012 DDL② 冗余列（§2.2 连带/§2.3/§2.4/§2.6 均须写归属供应商）。

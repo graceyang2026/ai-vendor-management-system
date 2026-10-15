@@ -21,8 +21,17 @@ import java.time.LocalDateTime;
  *
  * 有意不映射的列：
  * - tax_no_active：DB 生成列，唯一索引载体，不对业务代码暴露（schema.sql 注释同口径）。
- * - latest_performance_grade / risk_warning：派生字段归二期（用户裁决 2026-10-14 16:15），
- *   本批 SupplierResponse 对应字段恒返回 null，实体不读取列值，杜绝"抄存量值当派生结果"的假象。
+ *
+ * latest_performance_grade / risk_warning 两列（模块三 §3.3 归档联动新增映射，2026-10-15 裁决）：
+ * - <b>写侧已闭合</b>：绩效评价 APPROVE 归档时由 PerformanceEvaluationServiceImpl 同事务回写
+ *   （评级 + 风险标，只打标不改供应商状态）。
+ * - <b>读侧仍恒 null</b>：SupplierResponse 的这两枚派生字段按用户裁决 2026-10-14 16:15 归二期，
+ *   SupplierServiceImpl.toResponse 硬编码 null，不经本实体取值——即"库里已写实、出参不暴露"，
+ *   两处裁决的张力已留痕上报（见 docs/record/会话记录-backend-20261015.md）。
+ * - 列可空性：latest_performance_grade 无默认值（NULL 表示从未归档评价），risk_warning DDL 为
+ *   {@code NOT NULL DEFAULT 0}，但实体侧刻意用包装类型 {@link Boolean}（其余 TINYINT(1) 列同族范式），
+ *   以区分"未计算"与"计算过且为 false"。MyBatis-Plus 默认非空插入策略下，
+ *   既有建档 INSERT 语句不会带上这两列，存量行为零扰动。
  */
 @Data
 @TableName("supplier")
@@ -59,6 +68,18 @@ public class Supplier {
     private String status;
 
     private Long createdBy;
+
+    /**
+     * 最近一次<b>归档</b>（APPROVED）评价的评级 A/B/C/D；NULL = 从未有归档评价。
+     * 唯一写入点：模块三 §3.3 APPROVE 分支（非读侧派生，见类头说明）。
+     */
+    private String latestPerformanceGrade;
+
+    /**
+     * 风险预警打标：最近一次归档评级为 C/D，或存在过期已批资质 → true。
+     * <b>只打标，绝不改 status</b>（停用/淘汰必须走 §2.4/§2.6 LifecycleRequest 两步流程）。
+     */
+    private Boolean riskWarning;
 
     @Version
     private Integer version;

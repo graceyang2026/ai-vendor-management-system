@@ -178,7 +178,9 @@
 
 - **Given** 一条评价已被 AUDITOR `APPROVE` 归档
 - **When** 任何角色尝试修改该记录的 `fact_record` 或结果字段
-- **Then** 该记录不可再编辑，也不允许被新的评价覆盖（同周期已有归档记录时，`POST /performance/evaluations` 应通过 §1.4 的 `40902` 规则被拦截在更早的环节）
+- **Then** 该记录永久不可编辑、不可被覆盖（`40302`；归档即终态，无独立历史表）
+- **When** 同供应商同周期重新 `POST /performance/evaluations` 发起新评价
+- **Then** **允许新建独立新单**（用户裁决 2026-10-15 18:45：维持 DDL/契约现状，本文档旧版本条“同周期已有归档记录时 POST 应被 40902 拦截”属口径错误，已校正）。“一周期一单”仅约束**在途单**（`PENDING_REVIEW`/`RETURNED`）：`schema.sql` 生成列 `active_period_key` 对在途状态赋值、已归档/逻辑删除置 NULL 释放占位，与契约 §3.1（`docs/接口契约文档-供应商与绩效-20261013.md` L611、L694：40902 触发条件仅限 PENDING_REVIEW/RETURNED）一致；已归档历史单不受新单影响，同周期可存在多张归档单，供应商 `latest_performance_grade`/`risk_warning` 以最近一次归档为准
 
 ### 2.6 REJECT 沿用同一条记录，不新建
 

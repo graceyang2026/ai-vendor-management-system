@@ -450,6 +450,8 @@ Response `data`: `PerformanceEvaluationResponse`
 
 仅当前用户是创建人且 `status=RETURNED` 时可改 `fact_record` 重提，否则 `40302`；重提重新触发算分，沿用同一条记录（不新建）。Response `data`: `PerformanceEvaluationResponse`。
 
+> **重提审计留痕（用户 2026-10-15 16:42 拍板 B2=甲）**：重提成功须写一条 `AuditLog`，`action=SUBMIT`（与 §POST 首次提交一码）、`entity_type=PERFORMANCE_EVALUATION`、`entity_id` 为评价单 ID 并冗余 `supplier_id`。一码多域：靠 `entity_type` 与准入提交区分。
+
 ### `POST /performance/evaluations/{id}/review`
 
 Request:

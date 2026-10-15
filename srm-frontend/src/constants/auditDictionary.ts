@@ -715,3 +715,101 @@ export const NULL_FIELD_PLACEHOLDER = '—'
  * （不报错、不裁剪申请单行），展示层必须把"供应商档案缺失"与"档案存在"区分开，不得用空串伪装存在。
  */
 export const SUPPLIER_PROFILE_MISSING_LABEL = '供应商档案已注销或数据异常（§2.7 冗余列回 null）'
+
+/* ============== 模块三 · 绩效评价码值与文案（F1 新增，传码显中文分层；与供应商/资质/申请单枚举严格区分） ============== */
+
+/**
+ * EvaluationStatus 码类型与下拉选项。
+ * 码值表 EVALUATION_STATUS（本文件既有）与中文表 EVALUATION_STATUS_LABEL（既有，
+ * 待复核/已复核通过/已驳回重打分）同源复用，不另建第二套；
+ * PENDING_REVIEW/APPROVED/RETURNED 与 SupplierStatus、LIFECYCLE_REQUEST_STATUS 同码值不同义，
+ * 行内展示仍须 getStatusLabel(code, ENTITY_TYPE.PERFORMANCE_EVALUATION) 分流。
+ * 码值权威源：docs/api-spec.md §4.2 `type EvaluationStatus`（状态机 PENDING_REVIEW→APPROVED/RETURNED，
+ * 后端实现落 common 枚举 EvaluationStatus —— backend-dev 落地后以枚举 name() 复核）。
+ */
+export type EvaluationStatusCode = (typeof EVALUATION_STATUS)[keyof typeof EVALUATION_STATUS]
+
+export interface EvaluationStatusOption {
+  value: EvaluationStatusCode
+  label: string
+}
+
+/** 评价单三态筛选下拉（F2 业务员列表 / F3 审核员复核列表共用，避免各页自写码值数组双源）。 */
+export const EVALUATION_STATUS_OPTIONS: EvaluationStatusOption[] = (
+  Object.keys(EVALUATION_STATUS) as EvaluationStatusCode[]
+).map((value) => ({ value, label: EVALUATION_STATUS_LABEL[value] ?? value }))
+
+/**
+ * PerformanceGrade —— 评级四码 A/B/C/D（传码权威与颜色档位单一来源）。
+ * 码值/阈值权威源：docs/api-spec.md §4.1 评级映射（A≥90 / 80≤B<90 / 70≤C<80 / D<70）+
+ * 契约附录 A4.3 grade 行；后端由 PerformanceScoreCalculator 硬编码产出，**前端只读展示、
+ * 绝不提交或本地计算**（防篡改铁律 + 用户 2026-10-15 裁决 B1=甲）。
+ * types/supplier.ts 的 latest_performance_grade 类型 PerformanceGradeCode 已改由本表派生（单源化）。
+ * 联动语义（api-spec §4.1 L361）：A/B 不触发拦截；C/D 仅 risk_warning 打标、需人工走停用申请，
+ * 前端文案不得出现原型旧稿的"下单与结算强阻断"类硬阻断表述（用户 2026-10-15 裁决）。
+ */
+export const PERFORMANCE_GRADE = {
+  A: 'A',
+  B: 'B',
+  C: 'C',
+  D: 'D',
+} as const
+export type PerformanceGradeCode = (typeof PERFORMANCE_GRADE)[keyof typeof PERFORMANCE_GRADE]
+
+/** 评级色档（任务卡 F2 口径：A/B 绿、C 橙、D 红；未知码 info，与 getStatusTagType 同款兜底）。 */
+const GRADE_TAG_TYPE: Record<PerformanceGradeCode, ElTagType> = {
+  [PERFORMANCE_GRADE.A]: 'success',
+  [PERFORMANCE_GRADE.B]: 'success',
+  [PERFORMANCE_GRADE.C]: 'warning',
+  [PERFORMANCE_GRADE.D]: 'danger',
+}
+
+export function getGradeTagType(code?: string | null): ElTagType {
+  if (!code) return 'info'
+  return GRADE_TAG_TYPE[code as PerformanceGradeCode] ?? 'info'
+}
+
+/**
+ * EvaluationMode —— 取数模式两码（小写字面码值，与 DB 列 mode DEFAULT 'manual' 及
+ * docs/api-spec.md §4.2 mode 行、契约附录 A4.2 逐字一致；区别于其他枚举的大写风格，照契约原样传码）。
+ * 用途分层（用户 2026-10-15 裁决 B4=甲）：
+ * - §3.1 create 入参可传 manual/mock（"演示模拟数据 (Mock Mode)"按钮=真实提交语义，POST 携带 mode:"mock"）；
+ * - 出参 mode 只读回显（列表/详情显示「真实录入/演示生成」标签，裁决 20261013 方案 a）；
+ * - §3.2 重提**不传** mode（不得借重提切换取数模式）。
+ * 中文文案源：任务卡 B4 口径（真实录入/演示生成）。
+ */
+export const EVALUATION_MODE = {
+  MANUAL: 'manual',
+  MOCK: 'mock',
+} as const
+export type EvaluationModeCode = (typeof EVALUATION_MODE)[keyof typeof EVALUATION_MODE]
+
+const EVALUATION_MODE_LABEL_CN: Record<EvaluationModeCode, string> = {
+  [EVALUATION_MODE.MANUAL]: '真实录入',
+  [EVALUATION_MODE.MOCK]: '演示生成',
+}
+
+/** 取数模式中文（空值 '-'、未知码原样回显；仅用于只读回显与提交前界面提示）。 */
+export function getEvaluationModeLabel(code?: string | null): string {
+  if (!code) return '-'
+  return EVALUATION_MODE_LABEL_CN[code as EvaluationModeCode] ?? code
+}
+
+/** 模式标签颜色：真实录入 success、演示生成 warning（提示该单事实由服务端演示生成）；未知 info。 */
+export function getEvaluationModeTagType(code?: string | null): ElTagType {
+  if (code === EVALUATION_MODE.MANUAL) return 'success'
+  if (code === EVALUATION_MODE.MOCK) return 'warning'
+  return 'info'
+}
+
+/**
+ * §3.3 绩效评价复核决策单选项（入参码值仍是 DECISION 两码，仅中文标签按绩效域语义分流；
+ * 与 ADMISSION_DECISION_OPTIONS / QUALIFICATION_REVIEW_OPTIONS 同款范式，码值不双写）。
+ * 语义权威源：契约 §3.3 —— APPROVE→APPROVED 归档永久（无独立历史表）并同步供应商
+ * latest_performance_grade / risk_warning；REJECT→RETURNED 回到原 STAFF 走 §3.2 重提。
+ * 注意：本域入参字段名是 decision（**非**模板样例的 action），中文标签不改变传码。
+ */
+export const PERFORMANCE_REVIEW_DECISION_OPTIONS: DecisionOption[] = [
+  { value: DECISION.APPROVE, label: '复核通过（归档 APPROVED，评级与预警同步至供应商档案）' },
+  { value: DECISION.REJECT, label: '驳回打分（退回 RETURNED，由原业务员修正事实后重提）' },
+]

@@ -8,6 +8,7 @@ import ReviewLogTable from '@/components/audit/ReviewLogTable.vue'
 import ReviewHistoryLogTable from '@/components/audit/ReviewHistoryLogTable.vue'
 import QualificationPanel from '@/components/business/QualificationPanel.vue'
 import LifecycleDecisionDialog from '@/components/business/LifecycleDecisionDialog.vue'
+import PerformanceReviewPanel from '@/components/audit/PerformanceReviewPanel.vue'
 import { auditSupplierApi, getSupplierDetailApi, getSupplierListApi } from '@/api/supplier'
 import { getLifecycleTodoApi } from '@/api/lifecycle'
 import { ApiError } from '@/utils/request'
@@ -788,13 +789,8 @@ async function loadDetailQuiet(supplierId: number) {
             <el-empty v-if="!decisionLoading && decisionRows.length === 0" description="暂无符合条件的生命周期申请单" :image-size="60" />
           </template>
 
-          <!-- 4. 绩效评价复核（属模块三，本轮占位） -->
-          <template v-else-if="currentView === 'perf-review-list'">
-            <div class="page-header">
-              <span class="page-title">业务员季度绩效打分复核</span>
-            </div>
-            <el-empty description="绩效评价复核模块开发中（下一步实现）" />
-          </template>
+          <!-- 4. 绩效评价复核（模块三 F3-rev：§3.4 待复核队列 + §3.3 复核 + §3.5 只读详情弹窗） -->
+          <PerformanceReviewPanel v-else-if="currentView === 'perf-review-list'" />
 
           <!-- 5. 操作与审批日志 -->
           <ReviewLogTable v-else-if="currentView === 'log-list'" />
