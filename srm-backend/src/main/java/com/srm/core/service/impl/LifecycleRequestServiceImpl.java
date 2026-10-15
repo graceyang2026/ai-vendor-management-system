@@ -43,7 +43,11 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * 模块二 §2.4/§2.5/§2.6 生命周期申请实现（契约 §2.4-§2.6 + 附录 A3，docs/api-spec.md §3）。
+ * 模块二 §2.4/§2.5/§2.6/§2.7 生命周期申请实现（契约 §2.4-§2.7 + 附录 A3，docs/api-spec.md §3）。
+ *
+ * §2.7（裁决 20261015 增项）是本域的<b>只读聚合视图</b>：角色闸与 §2.6 同属终审权限域（40301 双闸），
+ * 过滤参数先验码值后触库（40001 不静默降级），供应商侧冗余两列两段查询补全避免 N+1，
+ * 零审计零写库——与写侧两步流程铁律互不侵蚀。
  *
  * 设计要点：
  * - <b>两步流程是唯一状态入口</b>：§2.4 只 insert 一张 PENDING 申请单，<b>物理上碰不到 supplier.status</b>；
@@ -95,6 +99,10 @@ public class LifecycleRequestServiceImpl implements LifecycleRequestService {
 
     private static final DateTimeFormatter DATE_TIME_FORMAT =
             DateTimeFormatter.ofPattern("uuuu-MM-dd'T'HH:mm:ss");
+
+    /** §2.7 分页收敛常量：与 SupplierServiceImpl §1.3 同值同范式（绝不在本域私设第二套口径） */
+    private static final int DEFAULT_PAGE_SIZE = 20;
+    private static final int MAX_PAGE_SIZE = 100;
 
     private static final String MSG_SUPPLIER_NOT_FOUND = "供应商不存在";
     /** 契约 §2.6 L555 的 40401 文案即泛义「资源不存在」（申请单域无契约登记的专属文案，不自拟） */
@@ -245,12 +253,49 @@ public class LifecycleRequestServiceImpl implements LifecycleRequestService {
     }
 
 
-    // ==================== §2.7 跨供应商聚合查询（Red 骨架，待实现） ====================
+    // ==================== §2.7 跨供应商聚合查询（终审待办队列，只读） ====================
 
+    /**
+     * §2.7 终审待办队列（AUDITOR 专属，@PreAuthorize + requireRole 双闸，契约 §2.7 L567/L592）。
+     * 判序与写侧同风格：<b>角色先于参数、参数先于触库</b>——非法枚举在查询前折 40001，
+     * 未知码值绝不静默当成"不过滤"（静默降级会把调用方的拼写错误误读成"确实没有待办"）；
+     * 供应商态/绩效态的 PENDING_REVIEW 严禁越权进入申请单三态过滤器（四套枚举互不复用铁律）。
+     * 分页收敛复用 §1.3 范式：page&lt;=0 折 1；page_size&lt;=0 折 20、&gt;100 折 100（任务书裁决
+     * "沿用现有分页范式"；契约矩阵"分页参数非法 40001"的字面与本裁决的取舍已留痕备案）。
+     * supplier_name/supplier_status 两段查询批量补全（selectBatchIds 主键 IN，避免 N+1）：
+     * {@code @TableLogic} 天然隐身逻辑删除供应商，脏 FK 缺席同理 → 冗余两列回 null 而<b>行不裁剪</b>
+     * （AUDITOR 全量终审视图，不受 §0 规则 A 行级隔离限制——任务书第 5 条与契约 L585 明文）。
+     * 只读铁律：零审计、零状态迁移、零写库（口径同 §2.5 L493/L570）。
+     */
     @Override
     public PageResult<LifecycleRequestTodoItem> listTodo(String status, String type, Long supplierId,
                                                          int page, int pageSize) {
-        throw new UnsupportedOperationException("§2.7 listTodo not implemented yet (TDD Red)");
+        roleGuard.requireRole(Role.AUDITOR);
+        String statusFilter = requireValidRequestStatus(status);
+        String typeFilter = StringUtils.hasText(type) ? requireValidType(type.trim()) : null;
+        int safePage = Math.max(page, 1);
+        int safePageSize = clampPageSize(pageSize);
+
+        IPage<LifecycleRequest> result = lifecycleRequestMapper.selectPage(
+                new Page<>(safePage, safePageSize),
+                new LambdaQueryWrapper<LifecycleRequest>()
+                        .eq(statusFilter != null, LifecycleRequest::getStatus, statusFilter)
+                        .eq(typeFilter != null, LifecycleRequest::getType, typeFilter)
+                        .eq(supplierId != null, LifecycleRequest::getSupplierId, supplierId)
+                        // 契约 §2.7 L584：applied_at 倒序；同刻并发单以主键倒序保证分页稳定（§2.5 同法）
+                        .orderByDesc(LifecycleRequest::getAppliedAt)
+                        .orderByDesc(LifecycleRequest::getId));
+        List<LifecycleRequest> rows = result.getRecords();
+        if (rows.isEmpty()) {
+            // 空页不触库：人名/供应商两段批量反查整体跳过；total 仍是 COUNT 真值不是本页条数
+            return new PageResult<>(Collections.emptyList(), result.getTotal(), safePage, safePageSize);
+        }
+        Map<Long, String> userNames = displayNames(rows);
+        Map<Long, Supplier> supplierBriefs = supplierBriefs(rows);
+        List<LifecycleRequestTodoItem> list = rows.stream()
+                .map(row -> toTodoItem(row, userNames, supplierBriefs.get(row.getSupplierId())))
+                .collect(Collectors.toList());
+        return new PageResult<>(list, result.getTotal(), safePage, safePageSize);
     }
 
     // ==================== 内部方法 ====================
@@ -341,6 +386,76 @@ public class LifecycleRequestServiceImpl implements LifecycleRequestService {
     /** 纯空白等同未填写（与 §2.2/§2.3 comment 同一口径） */
     private String trimToNull(String value) {
         return StringUtils.hasText(value) ? value.trim() : null;
+    }
+
+    /**
+     * §2.7 申请单三态过滤器取值校验（契约 §2.7 L576）：空白=未提供（返回 null 即不过滤）；
+     * 首尾空白 trim 后按码值表严格比对；非空白而非法（含小写与 PENDING_REVIEW 这类跨域串码）一律 40001。
+     * 与 requireValidType 同一分层风格：入参层没有 @RequestParam 级 Bean Validation，本方法就是唯一一道闸，
+     * 未知值绝不默认当成"不过滤"。
+     */
+    private String requireValidRequestStatus(String status) {
+        if (!StringUtils.hasText(status)) {
+            return null;
+        }
+        String code = status.trim();
+        if (REQ_PENDING.equals(code) || REQ_APPROVED.equals(code) || REQ_REJECTED.equals(code)) {
+            return code;
+        }
+        throw new BusinessException(ErrorCode.VALIDATION_FAILED, MSG_PARAM_INVALID);
+    }
+
+    /**
+     * 当页供应商简介（name + 当前合作状态）批量反查（主键 IN，避免 N+1；空集不查库）。
+     * 逻辑删除供应商被 {@code @TableLogic} 过滤、脏 FK 天然查不到 → 两者都表现为 map miss，
+     * 由 toTodoItem 折成 supplier_name/supplier_status 双 null，绝不 500 也绝不裁剪申请单行。
+     */
+    private Map<Long, Supplier> supplierBriefs(List<LifecycleRequest> rows) {
+        Set<Long> supplierIds = rows.stream()
+                .map(LifecycleRequest::getSupplierId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toCollection(HashSet::new));
+        if (supplierIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        return supplierMapper.selectBatchIds(supplierIds).stream()
+                // 按主键批量反查不会返回重复 ID，无需 merge 函数
+                .collect(Collectors.toMap(Supplier::getId, supplier -> supplier));
+    }
+
+    /**
+     * 附录 A3 全 13 字段 + 供应商侧冗余两列（契约 §2.7 L585，共 15 字段）。
+     * 两枚人名字段沿用 §2.5 列表口径（miss 空串）；supplier_name/supplier_status 缺席回 <b>null</b>——
+     * 与"人名缺失回空串"刻意不同：供应商行缺失是实体消亡而非人名未填，契约明文"字段可为 null"，
+     * 前端需要能把"供应商已删除/不存在"与"供应商在"区分开，空串会伪装成存在。
+     */
+    private LifecycleRequestTodoItem toTodoItem(LifecycleRequest row, Map<Long, String> userNames,
+                                                Supplier supplier) {
+        return LifecycleRequestTodoItem.builder()
+                .id(row.getId())
+                .supplierId(row.getSupplierId())
+                .type(row.getType())
+                .reason(row.getReason())
+                .status(row.getStatus())
+                .appliedBy(row.getAppliedBy())
+                .appliedByName(displayName(userNames, row.getAppliedBy()))
+                .appliedAt(format(row.getAppliedAt()))
+                .decidedBy(row.getDecidedBy())
+                .decidedByName(displayName(userNames, row.getDecidedBy()))
+                .decidedAt(format(row.getDecidedAt()))
+                .decisionComment(row.getDecisionComment())
+                .version(row.getVersion())
+                .supplierName(supplier == null ? null : supplier.getName())
+                .supplierStatus(supplier == null ? null : supplier.getStatus())
+                .build();
+    }
+
+    /** 分页收敛：与 SupplierServiceImpl.clampPageSize 完全同语义（page_size<=0 折默认 20，>100 折上限 100） */
+    private int clampPageSize(int pageSize) {
+        if (pageSize <= 0) {
+            return DEFAULT_PAGE_SIZE;
+        }
+        return Math.min(pageSize, MAX_PAGE_SIZE);
     }
 
     /** 列表页人名批量反查（申请人 + 决策人并集），避免 N+1；空集不查库 */

@@ -5,9 +5,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.srm.core.common.BusinessException;
 import com.srm.core.common.ErrorCode;
 import com.srm.core.common.GlobalExceptionHandler;
+import com.srm.core.common.PageResult;
 import com.srm.core.dto.lifecycle.LifecycleDecisionRequest;
 import com.srm.core.dto.lifecycle.LifecycleRequestCreateRequest;
 import com.srm.core.dto.lifecycle.LifecycleRequestResponse;
+import com.srm.core.dto.lifecycle.LifecycleRequestTodoItem;
 import com.srm.core.service.LifecycleRequestService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -36,7 +38,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * 模块二 §2.4/§2.5/§2.6 LifecycleRequestController 入参层契约测试
+ * 模块二 §2.4/§2.5/§2.6/§2.7 LifecycleRequestController 入参层契约测试
  * （standalone MockMvc + 真实 GlobalExceptionHandler，照 B1/B2 控制器测试范式）。
  *
  * 锁定行为（只锁路由层该管的事，业务闸门在 Service 单测与集成测试里锁）：
@@ -401,4 +403,136 @@ class LifecycleRequestControllerTest {
                         && !"version".equals(n)).findFirst())
                 .as("决策 DTO 只允许 decision/comment/version 三个字段").isEmpty();
     }
+
+    // ==================== §2.7 跨供应商聚合查询（终审待办队列） ====================
+
+    /** 附录 A3 全 13 字段 + supplier_name/supplier_status（契约 §2.7 L585，裁决 20261015） */
+    private static final String[] TODO_FIELDS_15 = {
+            "id", "supplier_id", "type", "reason", "status", "applied_by", "applied_by_name",
+            "applied_at", "decided_by", "decided_by_name", "decided_at", "decision_comment",
+            "version", "supplier_name", "supplier_status"
+    };
+
+    private LifecycleRequestTodoItem todoItem(Long id, String status) {
+        LifecycleRequestTodoItem.LifecycleRequestTodoItemBuilder builder = LifecycleRequestTodoItem.builder()
+                .id(id)
+                .supplierId(1001L)
+                .type("SUSPEND")
+                .reason("连续两期绩效 D 级，暂停新订单分配。")
+                .status(status)
+                .appliedBy(2L)
+                .appliedByName("张三")
+                .appliedAt("2030-06-01T09:00:00")
+                .version("PENDING".equals(status) ? 1 : 2);
+        if (!"PENDING".equals(status)) {
+            builder.decidedBy(3L).decidedByName("李四").decidedAt("2030-06-02T09:00:00")
+                    .decisionComment("确认停用。");
+        }
+        return builder.supplierName("杭州之江电镀有限公司").supplierStatus("NORMAL").build();
+    }
+
+    @Test
+    void todoListBindsAllQueryParamsAndDelegatesToService() throws Exception {
+        when(lifecycleRequestService.listTodo("PENDING", "SUSPEND", 1001L, 2, 50))
+                .thenReturn(new PageResult<>(List.of(todoItem(500L, "PENDING")), 7L, 2, 50));
+
+        mockMvc.perform(get("/api/v1/lifecycle-requests")
+                        .param("status", "PENDING").param("type", "SUSPEND")
+                        .param("supplier_id", "1001").param("page", "2").param("page_size", "50"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.total").value(7))
+                .andExpect(jsonPath("$.data.page").value(2))
+                .andExpect(jsonPath("$.data.page_size").value(50))
+                .andExpect(jsonPath("$.data.list[0].supplier_name").value("杭州之江电镀有限公司"))
+                .andExpect(jsonPath("$.data.list[0].supplier_status").value("NORMAL"))
+                .andExpect(jsonPath("$.data.list[0].version").value(1));
+
+        verify(lifecycleRequestService).listTodo("PENDING", "SUSPEND", 1001L, 2, 50);
+    }
+
+    @Test
+    void todoListAppliesContractDefaultsWhenQueryOmitted() throws Exception {
+        // 契约 §2.7 字段表：status/type/supplier_id 缺省=不过滤；page 默认 1、page_size 默认 20
+        when(lifecycleRequestService.listTodo(null, null, null, 1, 20))
+                .thenReturn(new PageResult<>(List.of(), 0L, 1, 20));
+
+        mockMvc.perform(get("/api/v1/lifecycle-requests"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.list").isArray())
+                .andExpect(jsonPath("$.data.list").isEmpty())
+                .andExpect(jsonPath("$.data.page_size").value(20));
+
+        verify(lifecycleRequestService).listTodo(null, null, null, 1, 20);
+    }
+
+    @Test
+    void todoListExposesThirteenPlusTwoFieldsInPhysicalSnakeCase() throws Exception {
+        when(lifecycleRequestService.listTodo(null, null, null, 1, 20))
+                .thenReturn(new PageResult<>(List.of(todoItem(500L, "PENDING"), todoItem(499L, "APPROVED")),
+                        2L, 1, 20));
+
+        String body = mockMvc.perform(get("/api/v1/lifecycle-requests"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        JsonNode rows = objectMapper.readTree(body).get("data").get("list");
+        assertThat(rows).hasSize(2);
+        assertThat(rows.get(0).fieldNames()).toIterable().containsExactlyInAnyOrder(TODO_FIELDS_15);
+        assertThat(rows.get(1).fieldNames()).toIterable().containsExactlyInAnyOrder(TODO_FIELDS_15);
+        // 未决行 decided_* 三枚原样 null（A3 口径不因聚合视图而放宽）；version 仍是 §2.6 取值链
+        assertThat(rows.get(0).get("decided_by").isNull()).isTrue();
+        assertThat(rows.get(0).get("decided_by_name").isNull()).isTrue();
+        assertThat(rows.get(0).get("decided_at").isNull()).isTrue();
+        assertThat(rows.get(0).get("decision_comment").isNull()).isTrue();
+        assertThat(rows.get(1).get("status").asText()).isEqualTo("APPROVED");
+        assertThat(rows.get(1).get("version").asInt()).isEqualTo(2);
+    }
+
+    @Test
+    void todoListSurfacesServiceGateErrorsAsHttp200WithBusinessCode() throws Exception {
+        // 非法枚举 40001 与角色二验 40301 都维持用户裁决 2026-10-14 传输口径（HTTP 200 + code 承载）；
+        // @PreAuthorize 真 403+40301 由 LifecycleRequestTodoIntegrationTest 端到端锁定
+        when(lifecycleRequestService.listTodo("FOO", null, null, 1, 20))
+                .thenThrow(new BusinessException(ErrorCode.VALIDATION_FAILED, PARAM_INVALID_MSG));
+        mockMvc.perform(get("/api/v1/lifecycle-requests").param("status", "FOO"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(40001))
+                .andExpect(jsonPath("$.message").value(PARAM_INVALID_MSG));
+
+        when(lifecycleRequestService.listTodo(null, "suspend", null, 1, 20))
+                .thenThrow(new BusinessException(ErrorCode.VALIDATION_FAILED, PARAM_INVALID_MSG));
+        mockMvc.perform(get("/api/v1/lifecycle-requests").param("type", "suspend"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(40001));
+
+        when(lifecycleRequestService.listTodo(null, null, null, 1, 20))
+                .thenThrow(new BusinessException(ErrorCode.FORBIDDEN, "无权限"));
+        mockMvc.perform(get("/api/v1/lifecycle-requests"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(40301))
+                .andExpect(jsonPath("$.message").value("无权限"));
+    }
+
+    @Test
+    void todoListPassesUnresolvableSupplierThroughWithoutErrorFieldNulling() throws Exception {
+        // 路由层不解释业务 join 语义：Service 回 null 的两枚冗余字段必须原样透出为 JSON null（不折空串）
+        when(lifecycleRequestService.listTodo(null, null, null, 1, 20))
+                .thenReturn(new PageResult<>(List.of(LifecycleRequestTodoItem.builder()
+                        .id(498L).supplierId(9999L).type("ELIMINATE").reason("依据破产裁定。")
+                        .status("PENDING").appliedBy(2L).appliedByName("张三")
+                        .appliedAt("2030-06-01T09:00:00").version(1).build()), 1L, 1, 20));
+
+        String body = mockMvc.perform(get("/api/v1/lifecycle-requests"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        JsonNode item = objectMapper.readTree(body).get("data").get("list").get(0);
+        assertThat(item.fieldNames()).toIterable().containsExactlyInAnyOrder(TODO_FIELDS_15);
+        assertThat(item.get("supplier_name").isNull()).isTrue();
+        assertThat(item.get("supplier_status").isNull()).isTrue();
+        assertThat(item.get("decided_by").isNull()).isTrue();
+    }
+
 }

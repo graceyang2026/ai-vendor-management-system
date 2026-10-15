@@ -667,3 +667,51 @@ export function getLifecycleActionLabelForStatus(supplierStatus: string): string
     .map((value) => LIFECYCLE_TYPE_ACTION_CN[value])
   return actions.length > 0 ? `${actions.join('/')}申请` : ''
 }
+
+/* ------------------------------------------------ §2.7 终审待办队列：筛选选项 + 空值占位（权威源见各段注释） */
+
+/**
+ * LifecycleRequestStatus 下拉选项（value=后端申请单三态码，label=生命周期域中文）。
+ * 码值权威源：契约 §2.7 请求参数表 `status`（PENDING/APPROVED/REJECTED）与后端实文
+ * srm-backend/.../service/impl/LifecycleRequestServiceImpl.java#requireValidRequestStatus
+ * （REQ_PENDING / REQ_APPROVED / REQ_REJECTED 三常量，其余值折 40001）。
+ * 中文沿用本文件既有 LIFECYCLE_STATUS_LABEL 单源（待终审/已批准/已驳回），不另建第二套文案；
+ * 与 SUPPLIER_STATUS_OPTIONS 同款规约：各页共用本数组，避免页面自写码值数组造成双源。
+ */
+export interface LifecycleRequestStatusOption {
+  value: LifecycleRequestStatusCode
+  label: string
+}
+
+export const LIFECYCLE_REQUEST_STATUS_OPTIONS: LifecycleRequestStatusOption[] = (
+  Object.keys(LIFECYCLE_REQUEST_STATUS) as LifecycleRequestStatusCode[]
+).map((value) => ({ value, label: LIFECYCLE_STATUS_LABEL[value] }))
+
+/**
+ * LifecycleRequestType 下拉选项（§2.7 query `type`：SUSPEND/RESUME/ELIMINATE）。
+ * 码值权威源：后端 LifecycleValidationPatterns.TYPE_REGEX（即 LIFECYCLE_REQUEST_TYPE 表），
+ * 中文沿用 LIFECYCLE_TYPE_LABEL_CN 单源。
+ */
+export interface LifecycleRequestTypeOption {
+  value: LifecycleRequestTypeCode
+  label: string
+}
+
+export const LIFECYCLE_REQUEST_TYPE_OPTIONS: LifecycleRequestTypeOption[] = (
+  Object.keys(LIFECYCLE_REQUEST_TYPE) as LifecycleRequestTypeCode[]
+).map((value) => ({ value, label: LIFECYCLE_TYPE_LABEL_CN[value] }))
+
+/**
+ * null 值占位符（后端原样回 null 的列统一用本占位；口径同 SupplierListView 派生列
+ * `latest_performance_grade || '—'` 的既有规约）。
+ * ⚠ null 与空串**不等价**：禁止 `|| ''` / `?? ''` 折叠（会把"实体不存在"伪装成"实体存在但值为空"）。
+ */
+export const NULL_FIELD_PLACEHOLDER = '—'
+
+/**
+ * §2.7 LifecycleRequestTodoItem 冗余供应商列（supplier_name / supplier_status）为 null 时的标注文案。
+ * 语义权威源：契约 §2.7 + 后端 LifecycleRequestServiceImpl#supplierBriefs/toTodoItem ——
+ * 供应商已被逻辑删除（@TableLogic 隐身）或存在历史脏 FK 时批量反查 map miss，这两列折成 null
+ * （不报错、不裁剪申请单行），展示层必须把"供应商档案缺失"与"档案存在"区分开，不得用空串伪装存在。
+ */
+export const SUPPLIER_PROFILE_MISSING_LABEL = '供应商档案已注销或数据异常（§2.7 冗余列回 null）'

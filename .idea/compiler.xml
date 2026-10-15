@@ -9,13 +9,13 @@
         <outputRelativeToContentRoot value="true" />
         <processorPath useClasspath="false">
           <entry name="$PROJECT_DIR$/../../reps/org/projectlombok/lombok/1.18.46/lombok-1.18.46.jar" />
-          <entry name="$PROJECT_DIR$/../../reps/org/projectlombok/lombok/1.18.46/lombok-1.18.46.jar" />
         </processorPath>
         <module name="srm-backend" />
       </profile>
     </annotationProcessing>
     <bytecodeTargetLevel>
       <module name="ai-vendor-management-system" target="17" />
+      <module name="srm-backend" target="17" />
     </bytecodeTargetLevel>
   </component>
   <component name="JavacSettings">

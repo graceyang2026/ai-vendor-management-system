@@ -7,6 +7,8 @@ import { ERROR_CODE } from '@/constants/errorCode'
 import { SUPPLIER_LOCK_CONFLICT_MSG } from '@/constants/supplierValidation'
 import {
   DECISION,
+  NULL_FIELD_PLACEHOLDER,
+  SUPPLIER_PROFILE_MISSING_LABEL,
   formatCreatedAt,
   getLifecycleDecisionOptions,
   getLifecycleTargetStatusLabel,
@@ -15,19 +17,30 @@ import {
   getStatusTagType,
   type DecisionCode,
 } from '@/constants/auditLogView'
-import type { LifecycleDecisionRequest, LifecycleRequestResponse, LifecycleRequestRow } from '@/types/lifecycle'
+import type { LifecycleDecisionRequest, LifecycleRequestResponse, LifecycleRequestTodoItem } from '@/types/lifecycle'
 
 /**
  * 审核员终审决策弹窗（契约 §2.6 POST /lifecycle-requests/{id}/decision，仅 AUDITOR）。
+ *
+ * 入参行模型：§2.7 LifecycleRequestTodoItem（终审待办队列返回项，= 附录 A3 全 13 字段 +
+ * supplier_name / supplier_status）。此前该弹窗收的是前端逐供应商循环拼装的过渡对象
+ * LifecycleRequestRow（供应商快照 + 嵌套 request），后端 §2.7 聚合端点落地后该拼装层已删除，
+ * 本组件改为直接消费契约对象的平铺字段，不再有任何 join。
+ *
+ * 冗余供应商列可空口径（契约 §2.7 + 后端 LifecycleRequestServiceImpl#toTodoItem）：
+ * 供应商已被逻辑删除/历史脏 FK 时 supplier_name / supplier_status 回 **null**（不报错、不裁剪申请单行），
+ * 本组件按 null 显式标注"档案缺失"占位，绝不 `|| ''` 折叠成"供应商存在"；
+ * 与"派生人名 miss 回空串"是两种形态，人名侧仍用 `|| '-'` 兜空串。
  *
  * 决策语义按申请类型分流展示（任务卡 F2.2：SUSPEND→批准停用、RESUME→批准恢复合作、
  * ELIMINATE→批准淘汰），但**提交报文仍只有 APPROVE/REJECT 两码**（码值权威源
  * auditDictionary.DECISION = 后端 SupplierValidationPatterns.DECISION_REGEX 单一事实源）；
  * 供应商目标状态由后端 Service 硬编码联动，前端无法也不得指定目标态（状态机唯一入口铁律）。
  *
- * 乐观锁取值链（裁决 20261013 候选 A）：version **必须取 §2.5 申请历史列表返回的申请单 version**
- * （LifecycleRequestRow.request.version），不是供应商 version；缺失/不匹配 40901，
- * 前端提示后由父级重拉 §2.5 换新 version（refresh 事件），绝不本地凑一个版本号硬试。
+ * 乐观锁取值链（裁决 20261013 候选 A + 裁决 20261015 §2.7 同口径）：version **必须取待办队列
+ * 返回项自带的申请单 version**（LifecycleRequestTodoItem.version），不是供应商 version；
+ * 缺失/不匹配 40901，前端提示后由父级重拉 §2.7 换新 version（refresh 事件），
+ * 绝不本地凑一个版本号硬试、也不本地乐观改状态。
  *
  * 已决件（status≠PENDING）不进本弹窗（父级行入口隐藏 + 只读展示 decided_*）；
  * REJECT 的意见在本域是**选填**（契约 §2.6 字段表 comment 非必填，与 §2.2/§2.3 驳回必填不同，
@@ -36,15 +49,15 @@ import type { LifecycleDecisionRequest, LifecycleRequestResponse, LifecycleReque
 const visible = defineModel<boolean>({ required: true })
 
 const props = defineProps<{
-  /** 待决策行：供应商档案快照（§1.3）+ 申请单（§2.5，version 唯一取值来源） */
-  row: LifecycleRequestRow | null
+  /** 待决策行：§2.7 终审待办队列返回项（申请单 13 字段 + 供应商名/当前状态冗余两列，version 取值来源） */
+  row: LifecycleRequestTodoItem | null
 }>()
 
 const emit = defineEmits<{
   /** 决策成功回传 §2.6 响应（decided_* 已回写）；父级须重拉该供应商 §1.4 取新供应商 version，禁止本地改状态 */
   decided: [request: LifecycleRequestResponse]
-  /** 40901/40302/40401 等"服务端已变"情形：父级重拉 §2.5 申请历史（换新 version / 剔除已决行） */
-  refresh: [supplierId: number]
+  /** 40901/40302/40401 等"服务端已变"情形：父级重拉 §2.7 待办队列（换新 version / 剔除已决行） */
+  refresh: []
 }>()
 
 const submitting = ref(false)
@@ -54,8 +67,12 @@ const formModel = reactive<{ decision: DecisionCode; comment: string }>({
   comment: '',
 })
 
-const decisionOptions = computed(() => getLifecycleDecisionOptions(props.row?.request.type))
+const decisionOptions = computed(() => getLifecycleDecisionOptions(props.row?.type))
 const isReject = computed(() => formModel.decision === DECISION.REJECT)
+/** 供应商档案是否已缺失（§2.7 冗余列回 null：逻辑删除 / 脏 FK），弹窗只做如实标注，不阻止对申请单本身决策 */
+const isSupplierProfileMissing = computed(
+  () => props.row !== null && (props.row.supplier_name === null || props.row.supplier_status === null),
+)
 
 watch(visible, (opened) => {
   if (!opened) return
@@ -71,17 +88,17 @@ function close() {
 async function handleDecide() {
   const row = props.row
   if (!row) return
-  // §2.6 请求体三字段（version 取 §2.5 申请单 version；comment 选填，空白不提交——
+  // §2.6 请求体三字段（version 取 §2.7 待办队列返回项的申请单 version；comment 选填，空白不提交——
   // 后端原样回写 decision_comment，空串与 null 语义不同，前端不凑值）
   const payload: LifecycleDecisionRequest = {
     decision: formModel.decision,
-    version: row.request.version,
+    version: row.version,
   }
   const comment = formModel.comment.trim()
   if (comment) payload.comment = comment
   submitting.value = true
   try {
-    const res = await decideLifecycleRequestApi(row.request.id, payload)
+    const res = await decideLifecycleRequestApi(row.id, payload)
     ElMessage.success('终审决策已提交，供应商状态以服务端最新档案为准')
     close()
     if (res.data) emit('decided', res.data)
@@ -100,13 +117,13 @@ function handleDecideError(err: unknown) {
   }
   if (err.code === ERROR_CODE.OPTIMISTIC_LOCK_CONFLICT) {
     ElMessage.error(SUPPLIER_LOCK_CONFLICT_MSG)
-    if (props.row) emit('refresh', props.row.supplier_id)
+    emit('refresh')
     return
   }
   if (err.code === ERROR_CODE.STATUS_NOT_ALLOWED || err.code === ERROR_CODE.NOT_FOUND) {
     // 40302 申请单已决/供应商被并发淘汰、40401 申请单不存在：服务端事实已变，直显文案并请父级重拉
     ElMessage.error(err.message)
-    if (props.row) emit('refresh', props.row.supplier_id)
+    emit('refresh')
     return
   }
   ElMessage.error(err.message)
@@ -124,15 +141,24 @@ function handleDecideError(err: unknown) {
     />
 
     <el-descriptions v-if="row" :column="2" border size="small" style="margin-bottom: 16px">
-      <el-descriptions-item label="目标供应商">{{ row.supplier_name }}</el-descriptions-item>
-      <el-descriptions-item label="供应商当前状态">
-        <el-tag size="small" :type="getStatusTagType(row.supplier_status)">{{ getStatusLabel(row.supplier_status) }}</el-tag>
+      <el-descriptions-item label="目标供应商">
+        <!-- §2.7 冗余列 supplier_name：null=档案已注销/脏 FK → 占位 + title 标注，不折空串伪装存在 -->
+        <span v-if="isSupplierProfileMissing" class="supplier-missing" :title="SUPPLIER_PROFILE_MISSING_LABEL">
+          {{ NULL_FIELD_PLACEHOLDER }}
+        </span>
+        <span v-else>{{ row.supplier_name }}</span>
       </el-descriptions-item>
-      <el-descriptions-item label="申请类型">{{ getLifecycleTypeLabel(row.request.type) }}</el-descriptions-item>
-      <el-descriptions-item label="批准后目标状态">{{ getLifecycleTargetStatusLabel(row.request.type) }}</el-descriptions-item>
-      <el-descriptions-item label="申请人">{{ row.request.applied_by_name || '-' }}</el-descriptions-item>
-      <el-descriptions-item label="申请时间">{{ formatCreatedAt(row.request.applied_at) }}</el-descriptions-item>
-      <el-descriptions-item label="申请理由" :span="2">{{ row.request.reason }}</el-descriptions-item>
+      <el-descriptions-item label="供应商当前状态">
+        <el-tag v-if="row.supplier_status !== null" size="small" :type="getStatusTagType(row.supplier_status)">
+          {{ getStatusLabel(row.supplier_status) }}
+        </el-tag>
+        <span v-else class="supplier-missing" :title="SUPPLIER_PROFILE_MISSING_LABEL">{{ NULL_FIELD_PLACEHOLDER }}</span>
+      </el-descriptions-item>
+      <el-descriptions-item label="申请类型">{{ getLifecycleTypeLabel(row.type) }}</el-descriptions-item>
+      <el-descriptions-item label="批准后目标状态">{{ getLifecycleTargetStatusLabel(row.type) }}</el-descriptions-item>
+      <el-descriptions-item label="申请人">{{ row.applied_by_name || '-' }}</el-descriptions-item>
+      <el-descriptions-item label="申请时间">{{ formatCreatedAt(row.applied_at) }}</el-descriptions-item>
+      <el-descriptions-item label="申请理由" :span="2">{{ row.reason }}</el-descriptions-item>
     </el-descriptions>
 
     <el-form label-width="120px">
@@ -168,5 +194,9 @@ function handleDecideError(err: unknown) {
 .reject-hint {
   font-size: 12px;
   color: #e6a23c;
+}
+.supplier-missing {
+  color: #909399;
+  font-style: italic;
 }
 </style>

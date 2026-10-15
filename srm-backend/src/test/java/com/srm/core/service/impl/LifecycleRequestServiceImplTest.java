@@ -1,13 +1,16 @@
 package com.srm.core.service.impl;
 
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.srm.core.audit.AuditResult;
 import com.srm.core.audit.EntityType;
 import com.srm.core.common.BusinessException;
 import com.srm.core.common.ErrorCode;
+import com.srm.core.common.PageResult;
 import com.srm.core.common.enums.Role;
 import com.srm.core.dto.lifecycle.LifecycleDecisionRequest;
 import com.srm.core.dto.lifecycle.LifecycleRequestCreateRequest;
 import com.srm.core.dto.lifecycle.LifecycleRequestResponse;
+import com.srm.core.dto.lifecycle.LifecycleRequestTodoItem;
 import com.srm.core.entity.LifecycleRequest;
 import com.srm.core.entity.Supplier;
 import com.srm.core.entity.User;
@@ -30,6 +33,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -44,7 +48,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * 模块二 §2.4/§2.5/§2.6 生命周期申请服务单元测试（契约 §2.4-§2.6 + 附录 A3，docs/api-spec.md §3）。
+ * 模块二 §2.4/§2.5/§2.6/§2.7 生命周期申请服务单元测试（契约 §2.4-§2.7 + 附录 A3，docs/api-spec.md §3）。
  *
  * 判序（与实现一致，逐道锁定，避免"错误码互相掩盖"）：
  * <ul>
@@ -808,6 +812,193 @@ class LifecycleRequestServiceImplTest {
     private void verifyNoMoreAuditWrites() {
         verify(auditLogService, org.mockito.Mockito.times(1)).record(any(EntityType.class), anyLong(),
                 anyLong(), any(UserPrincipal.class), any(), any(), any(), any(AuditResult.class), any());
+    }
+
+
+    // ==================== §2.7 listTodo：跨供应商聚合查询（终审待办队列） ====================
+
+    /** selectPage 替身：按分页拦截器的方式回填 records/total（真实行序与 LIMIT 由 H2 集成测试锁定） */
+    private void stubTodoPage(long total, List<LifecycleRequest> records) {
+        when(lifecycleRequestMapper.selectPage(any(), any())).thenAnswer(invocation -> {
+            Page<LifecycleRequest> page = invocation.getArgument(0);
+            page.setRecords(records);
+            page.setTotal(total);
+            return page;
+        });
+    }
+
+    private Supplier supplierBrief(long id, String name, String status) {
+        Supplier s = new Supplier();
+        s.setId(id);
+        s.setName(name);
+        s.setStatus(status);
+        return s;
+    }
+
+    private LifecycleRequest todoRow(long id, Long supplierId, String type, String status, int version) {
+        LifecycleRequest row = new LifecycleRequest();
+        row.setId(id);
+        row.setSupplierId(supplierId);
+        row.setType(type);
+        row.setReason("终审待办造数单。");
+        row.setStatus(status);
+        row.setVersion(version);
+        row.setAppliedBy(staff.getId());
+        row.setAppliedAt(LocalDateTime.of(2030, 6, 1, 9, 0));
+        if (!"PENDING".equals(status)) {
+            row.setDecidedBy(auditor.getId());
+            row.setDecidedAt(LocalDateTime.of(2030, 6, 2, 9, 0));
+            row.setDecisionComment("同意。");
+        }
+        row.setCreatedAt(LocalDateTime.of(2030, 6, 1, 9, 0));
+        row.setUpdatedAt(LocalDateTime.of(2030, 6, 1, 9, 0));
+        row.setDeleted(0);
+        return row;
+    }
+
+    @Test
+    void listTodoRejectsStaffWith40301BeforeTouchingAnyMapper() {
+        when(currentUserProvider.require()).thenReturn(staff);
+
+        expectCode(40301, MSG_FORBIDDEN, () -> service.listTodo(null, null, null, 1, 20));
+
+        verifyNoInteractions(lifecycleRequestMapper, supplierMapper, userMapper, auditLogService);
+    }
+
+    @Test
+    void listTodoRejectsAdminWith40301BecauseTodoQueueIsAuditorOnly() {
+        when(currentUserProvider.require()).thenReturn(admin);
+
+        expectCode(40301, MSG_FORBIDDEN, () -> service.listTodo("PENDING", null, null, 1, 20));
+
+        verifyNoInteractions(lifecycleRequestMapper, supplierMapper, userMapper, auditLogService);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"pending", "FOO", "PASSED", "PENDING_REVIEW"})
+    void listTodoRejectsIllegalStatusCodeWith40001AndNeverQueries(String status) {
+        // PENDING_REVIEW 是供应商/绩效状态码，绝不容许越权污染申请单三态（四套枚举互不复用铁律）
+        when(currentUserProvider.require()).thenReturn(auditor);
+
+        expectCode(40001, MSG_PARAM_INVALID, () -> service.listTodo(status, null, null, 1, 20));
+
+        verify(lifecycleRequestMapper, never()).selectPage(any(), any());
+        verifyNoInteractions(auditLogService);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"suspend", "BLACKLIST", "STOP", "ELIMINATE_"})
+    void listTodoRejectsIllegalTypeCodeWith40001AndNeverQueries(String type) {
+        when(currentUserProvider.require()).thenReturn(auditor);
+
+        expectCode(40001, MSG_PARAM_INVALID, () -> service.listTodo(null, type, null, 1, 20));
+
+        verify(lifecycleRequestMapper, never()).selectPage(any(), any());
+        verifyNoInteractions(auditLogService);
+    }
+
+    @Test
+    void listTodoAcceptsEveryLegalCodeAndTreatsBlankFiltersAsUnspecified() {
+        when(currentUserProvider.require()).thenReturn(auditor);
+        stubTodoPage(0L, Collections.emptyList());
+
+        // 合法三态/三类型（含首尾空白 trim 后合法）与"空白等同未提供"都必须放行到查询段
+        for (String status : List.of("PENDING", "APPROVED", "REJECTED", "  ", "", " PENDING ")) {
+            assertThat(service.listTodo(status, null, null, 1, 20).getList()).isEmpty();
+        }
+        for (String type : List.of("SUSPEND", "RESUME", "ELIMINATE", "  ", "", " RESUME ")) {
+            assertThat(service.listTodo(null, type, null, 1, 20).getList()).isEmpty();
+        }
+
+        verifyNoInteractions(supplierMapper, userMapper, auditLogService);
+    }
+
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void listTodoClampsPagingExactlyLikeSupplierListSection13() {
+        // 分页收敛与 §1.3 同一范式（任务书口径）：page<=0 折 1；page_size<=0 折 20；>100 折 100
+        when(currentUserProvider.require()).thenReturn(auditor);
+        stubTodoPage(0L, Collections.emptyList());
+
+        PageResult<LifecycleRequestTodoItem> negative = service.listTodo(null, null, null, -3, 0);
+        PageResult<LifecycleRequestTodoItem> oversized = service.listTodo(null, null, null, 2, 1000);
+
+        ArgumentCaptor<Page> captor = ArgumentCaptor.forClass(Page.class);
+        verify(lifecycleRequestMapper, org.mockito.Mockito.times(2)).selectPage(captor.capture(), any());
+        assertThat(captor.getAllValues().get(0).getCurrent()).isEqualTo(1);
+        assertThat(captor.getAllValues().get(0).getSize()).isEqualTo(20);
+        assertThat(captor.getAllValues().get(1).getCurrent()).isEqualTo(2);
+        assertThat(captor.getAllValues().get(1).getSize()).isEqualTo(100);
+        assertThat(negative.getPage()).isEqualTo(1);
+        assertThat(negative.getPageSize()).isEqualTo(20);
+        assertThat(oversized.getPage()).isEqualTo(2);
+        assertThat(oversized.getPageSize()).isEqualTo(100);
+    }
+
+    @Test
+    void listTodoBeyondLastPageReturnsEmptyListWithRealTotalAndNoLookups() {
+        when(currentUserProvider.require()).thenReturn(auditor);
+        stubTodoPage(234L, Collections.emptyList());
+
+        PageResult<LifecycleRequestTodoItem> result = service.listTodo(null, null, null, 99, 20);
+
+        assertThat(result.getTotal()).isEqualTo(234L);   // total 是 COUNT 真值，不是本页条数
+        assertThat(result.getList()).isEmpty();
+        verifyNoInteractions(supplierMapper, userMapper, auditLogService);   // 空页不查库（批量反查防空集范式）
+    }
+
+    @Test
+    void listTodoAssemblesTodoItemsWithSupplierBriefAndKeepsRowsReadOnly() {
+        when(currentUserProvider.require()).thenReturn(auditor);
+        LifecycleRequest r1 = todoRow(11L, SUPPLIER_ID, "SUSPEND", "APPROVED", 2);
+        LifecycleRequest r2 = todoRow(12L, 2002L, "RESUME", "PENDING", 1);   // 2002 缺席：模拟逻辑删除/脏 FK
+        stubTodoPage(7L, List.of(r1, r2));
+        when(userMapper.selectBatchIds(any())).thenReturn(List.of(
+                user(staff.getId(), "staff01", "张三"), user(auditor.getId(), "auditor01", "李四")));
+        when(supplierMapper.selectBatchIds(any())).thenReturn(
+                List.of(supplierBrief(SUPPLIER_ID, "杭州之江电镀有限公司", "SUSPENDED")));
+
+        PageResult<LifecycleRequestTodoItem> result = service.listTodo("APPROVED", "SUSPEND", null, 1, 20);
+
+        assertThat(result.getTotal()).isEqualTo(7L);
+        assertThat(result.getPage()).isEqualTo(1);
+        assertThat(result.getPageSize()).isEqualTo(20);
+        assertThat(result.getList()).hasSize(2);
+        LifecycleRequestTodoItem first = result.getList().get(0);
+        assertThat(first.getId()).isEqualTo(11L);
+        assertThat(first.getSupplierName()).isEqualTo("杭州之江电镀有限公司");
+        assertThat(first.getSupplierStatus()).isEqualTo("SUSPENDED");   // 当前合作状态，与 APPROVE 目标态解耦
+        assertThat(first.getAppliedByName()).isEqualTo("张三");
+        assertThat(first.getDecidedByName()).isEqualTo("李四");
+        assertThat(first.getAppliedAt()).isEqualTo("2030-06-01T09:00:00");
+        assertThat(first.getDecisionComment()).isEqualTo("同意。");
+        assertThat(first.getVersion()).isEqualTo(2);                   // §2.6 入参取值链
+        LifecycleRequestTodoItem second = result.getList().get(1);
+        assertThat(second.getSupplierName()).isNull();                 // 契约 §2.7 L585：查不到供应商回 null 不报错
+        assertThat(second.getSupplierStatus()).isNull();
+        assertThat(second.getDecidedByName()).isEmpty();               // 未决行 decided_by_name 空串，与 §2.5 同口径
+        assertThat(second.getDecidedAt()).isNull();
+        assertThat(second.getVersion()).isEqualTo(1);
+
+        verify(lifecycleRequestMapper, never()).insert(any(LifecycleRequest.class));
+        verify(lifecycleRequestMapper, never()).updateById(any(LifecycleRequest.class));
+        verify(supplierMapper, never()).updateById(any(Supplier.class));
+        verifyNoInteractions(auditLogService);                         // 只读铁律：零审计
+    }
+
+    @Test
+    void listTodoDefensivelySkipsSupplierLookupWhenEveryRowHasNullSupplierId() {
+        // 脏数据防御：全行 supplier_id 为 null 时批量集合为空 → 不触库（与 displayNames 空集不查库同一范式）
+        when(currentUserProvider.require()).thenReturn(auditor);
+        stubTodoPage(1L, List.of(todoRow(13L, null, "SUSPEND", "PENDING", 1)));
+        when(userMapper.selectBatchIds(any())).thenReturn(List.of(user(staff.getId(), "staff01", "张三")));
+
+        PageResult<LifecycleRequestTodoItem> result = service.listTodo(null, null, null, 1, 20);
+
+        assertThat(result.getList()).hasSize(1);
+        assertThat(result.getList().get(0).getSupplierName()).isNull();
+        assertThat(result.getList().get(0).getSupplierStatus()).isNull();
+        verifyNoInteractions(supplierMapper);
     }
 
     /** 建单落库形态断言：PENDING + version=1 + 决策痕迹三枚 NULL + 申请人/时间就位 */
