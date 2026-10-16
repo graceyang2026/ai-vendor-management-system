@@ -23,6 +23,7 @@ import {
 import {
   createSupplierApi,
   deleteSupplierApi,
+  exportSuppliersApi,
   getSupplierDetailApi,
   getSupplierListApi,
   submitSupplierApi,
@@ -38,6 +39,7 @@ import {
 } from '@/constants/supplierValidation'
 import type {
   SupplierCreateRequest,
+  SupplierExportQuery,
   SupplierFormModel,
   SupplierItem,
   SupplierListQuery,
@@ -142,6 +144,36 @@ function showRequestError(err: unknown) {
     ElMessage.error(err.message)
   } else {
     ElMessage.error('网络异常，请稍后重试')
+  }
+}
+
+/* ---------------------------------------------------------------- 导出 Excel（GET /suppliers/export，只读，需求定稿 2026-10-16） */
+
+/**
+ * 页头「导出 Excel」：复用当前列表查询条件 query.keyword / query.status（空则不传该参数），
+ * 走 request 的 blob 通道全量导出（不传 page/page_size），落盘由 api/supplier.ts 触发。
+ * 角色维度：ADMIN/STAFF/AUDITOR 均可用（后端 @PreAuthorize 与 §1.3 列表逐字一致、只读不改状态），
+ * 故本按钮**不**按 isStaff 门控（区别于新增/编辑/删除/送审等写操作入口）；
+ * 前端不做行级过滤，导出可见范围一律由后端 §0 隔离裁定，越权仍由服务端 40301 兜底。
+ * 导出期间 exporting=true → 按钮 loading（el-button loading 自带禁用，防重复点击）；
+ * 成功提示展示落盘文件名，失败复用 showRequestError（后端以 JSON 返回的真实错误已由
+ * request 拦截器把 blob 读回成 ApiError，message 透传后端文案）。
+ */
+const exporting = ref(false)
+
+async function handleExport() {
+  if (exporting.value) return
+  exporting.value = true
+  try {
+    const params: SupplierExportQuery = {}
+    if (query.keyword.trim()) params.keyword = query.keyword.trim()
+    if (query.status) params.status = query.status
+    const fileName = await exportSuppliersApi(params)
+    ElMessage.success(`导出成功，已开始下载：${fileName}`)
+  } catch (err) {
+    showRequestError(err)
+  } finally {
+    exporting.value = false
   }
 }
 
@@ -640,8 +672,12 @@ async function handleLogout() {
           <template v-if="currentView === 'supplier-list'">
             <div class="page-header">
               <span class="page-title">供应商档案与生命周期管理</span>
-              <!-- 角色维度：新增仅 STAFF（后端 STAFF 专属 40301 兜底，前端隐藏只是体验层） -->
-              <el-button v-if="isStaff" type="primary" @click="openCreate">+ 新增供应商档案</el-button>
+              <div class="page-actions">
+                <!-- 只读导出：角色闸与 §1.3 列表一致（ADMIN/STAFF/AUDITOR 均可用），故不按 isStaff 门控；后端 40301 才是安全边界 -->
+                <el-button :loading="exporting" @click="handleExport">导出 Excel</el-button>
+                <!-- 角色维度：新增仅 STAFF（后端 STAFF 专属 40301 兜底，前端隐藏只是体验层） -->
+                <el-button v-if="isStaff" type="primary" @click="openCreate">+ 新增供应商档案</el-button>
+              </div>
             </div>
 
             <el-form :inline="true" :model="query" style="margin-bottom: 10px">
@@ -963,6 +999,11 @@ async function handleLogout() {
   font-size: 18px;
   font-weight: bold;
   color: #303133;
+}
+.page-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 .detail-section {
   margin-bottom: 24px;

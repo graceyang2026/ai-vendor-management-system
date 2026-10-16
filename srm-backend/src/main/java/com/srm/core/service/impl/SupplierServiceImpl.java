@@ -12,6 +12,7 @@ import com.srm.core.common.PageResult;
 import com.srm.core.common.enums.Role;
 import com.srm.core.dto.supplier.SupplierAuditDecisionRequest;
 import com.srm.core.dto.supplier.SupplierCreateRequest;
+import com.srm.core.dto.supplier.SupplierExportRow;
 import com.srm.core.dto.supplier.SupplierResponse;
 import com.srm.core.dto.supplier.SupplierSubmitRequest;
 import com.srm.core.dto.supplier.SupplierUpdateRequest;
@@ -105,6 +106,9 @@ public class SupplierServiceImpl implements SupplierService {
     /** 分页口径（api-spec §0）：默认 20，上限 100，页码最小 1 */
     private static final int DEFAULT_PAGE_SIZE = 20;
     private static final int MAX_PAGE_SIZE = 100;
+
+    /** 导出行数硬上限（需求定稿 2026-10-16）：超量截断至前 5000 行，不报错 */
+    private static final int MAX_EXPORT_ROWS = 5000;
 
     private static final String MSG_TAX_NO_CONFLICT = "统一社会信用代码已被其他供应商占用";
     private static final String MSG_SUPPLIER_NOT_FOUND = "供应商不存在";
@@ -226,24 +230,8 @@ public class SupplierServiceImpl implements SupplierService {
         int safePage = Math.max(page, 1);
         int safePageSize = clampPageSize(pageSize);
 
-        LambdaQueryWrapper<Supplier> wrapper = new LambdaQueryWrapper<>();
-        if (me.getRole() == Role.STAFF) {
-            // §0 规则 A 下推 SQL（仅卡 STAFF，裁决 2026-10-14 晚）：公有资产区（非 DRAFT/RETURNED）∪ 本人私有在途区
-            wrapper.and(privateOrPublic -> privateOrPublic
-                    .notIn(Supplier::getStatus, STATUS_DRAFT, STATUS_RETURNED)
-                    .or()
-                    .eq(Supplier::getCreatedBy, me.getId()));
-        }
-        if (StringUtils.hasText(status)) {
-            wrapper.eq(Supplier::getStatus, status);
-        }
-        if (StringUtils.hasText(keyword)) {
-            wrapper.and(nameOrTaxNo -> nameOrTaxNo
-                    .like(Supplier::getName, keyword)
-                    .or()
-                    .like(Supplier::getTaxNo, keyword));
-        }
-        wrapper.orderByDesc(Supplier::getCreatedAt);
+        // §0 行级隔离 + status/keyword 过滤的唯一条件工厂：与导出路径同源，见 isolationScopedWrapper
+        LambdaQueryWrapper<Supplier> wrapper = isolationScopedWrapper(me, status, keyword);
 
         IPage<Supplier> result = supplierMapper.selectPage(new Page<>(safePage, safePageSize), wrapper);
         List<Supplier> records = result.getRecords();
@@ -252,6 +240,34 @@ public class SupplierServiceImpl implements SupplierService {
                 .map(record -> toResponse(record, creatorName(creatorNames, record.getCreatedBy())))
                 .collect(Collectors.toList());
         return new PageResult<>(list, result.getTotal(), safePage, safePageSize);
+    }
+
+    // ==================== 导出查询（GET /suppliers/export，需求定稿 2026-10-16） ====================
+
+    /**
+     * 导出查询：<b>隔离口径与 §1.3 list 逐字同源</b>（同一个 isolationScopedWrapper，单测逐字节比较
+     * 两条路径的 SQL 段与绑定参数）。5000 行上限双保险：查询侧走分页截器 LIMIT（searchCount=false
+     * 省掉 COUNT 全表，导出不需要总条数）；结果侧再防御性截断一道，分页插件意外失效也绝不整表进内存。
+     * 只读能力：不写 AuditLog（与 §2.5 只读列表同口径）；码值→中文交由 SupplierExportRow.from。
+     */
+    @Override
+    public List<SupplierExportRow> exportRows(String status, String keyword) {
+        UserPrincipal me = currentUserProvider.require();
+        LambdaQueryWrapper<Supplier> wrapper = isolationScopedWrapper(me, status, keyword);
+
+        Page<Supplier> exportPage = new Page<>(1, MAX_EXPORT_ROWS);
+        exportPage.setSearchCount(false);
+        IPage<Supplier> result = supplierMapper.selectPage(exportPage, wrapper);
+        List<Supplier> records = result.getRecords();
+        if (records.size() > MAX_EXPORT_ROWS) {
+            records = records.subList(0, MAX_EXPORT_ROWS);
+        }
+
+        Map<Long, String> creatorNames = creatorNames(records);
+        return records.stream()
+                .map(record -> SupplierExportRow.from(
+                        toResponse(record, creatorName(creatorNames, record.getCreatedBy()))))
+                .collect(Collectors.toList());
     }
 
     // ==================== §1.4 详情 ====================
@@ -351,6 +367,36 @@ public class SupplierServiceImpl implements SupplierService {
     }
 
     // ==================== 内部方法 ====================
+
+    /**
+     * §0 行级隔离 + status/keyword 过滤的<b>唯一查询条件工厂</b>（list 与导出共用，需求定稿 2026-10-16）：
+     * - 仅卡 STAFF（裁决 2026-10-14 晚）：公有资产区（非 DRAFT/RETURNED）∪ 本人私有在途区下推 SQL，
+     *   绝不依赖前端传参；导出侧禁止另写一套查询绕过本方法（acceptance §4 硬验收点）
+     * - status/keyword 过滤同样拼进 wrapper（keyword 命名/税号 LIKE，模糊片段由 MP 拼接）
+     * - 排序口径创建时间倒序：分页与"前 5000 行截断"共用同一稳定全序
+     */
+    private LambdaQueryWrapper<Supplier> isolationScopedWrapper(UserPrincipal me, String status,
+                                                                String keyword) {
+        LambdaQueryWrapper<Supplier> wrapper = new LambdaQueryWrapper<>();
+        if (me.getRole() == Role.STAFF) {
+            // §0 规则 A 下推 SQL（仅卡 STAFF，裁决 2026-10-14 晚）：公有资产区（非 DRAFT/RETURNED）∪ 本人私有在途区
+            wrapper.and(privateOrPublic -> privateOrPublic
+                    .notIn(Supplier::getStatus, STATUS_DRAFT, STATUS_RETURNED)
+                    .or()
+                    .eq(Supplier::getCreatedBy, me.getId()));
+        }
+        if (StringUtils.hasText(status)) {
+            wrapper.eq(Supplier::getStatus, status);
+        }
+        if (StringUtils.hasText(keyword)) {
+            wrapper.and(nameOrTaxNo -> nameOrTaxNo
+                    .like(Supplier::getName, keyword)
+                    .or()
+                    .like(Supplier::getTaxNo, keyword));
+        }
+        wrapper.orderByDesc(Supplier::getCreatedAt);
+        return wrapper;
+    }
 
     private Supplier requireSupplier(Long id) {
         Supplier supplier = supplierMapper.selectById(id);

@@ -9,7 +9,7 @@ import ReviewHistoryLogTable from '@/components/audit/ReviewHistoryLogTable.vue'
 import QualificationPanel from '@/components/business/QualificationPanel.vue'
 import LifecycleDecisionDialog from '@/components/business/LifecycleDecisionDialog.vue'
 import PerformanceReviewPanel from '@/components/audit/PerformanceReviewPanel.vue'
-import { auditSupplierApi, getSupplierDetailApi, getSupplierListApi } from '@/api/supplier'
+import { auditSupplierApi, exportSuppliersApi, getSupplierDetailApi, getSupplierListApi } from '@/api/supplier'
 import { getLifecycleTodoApi } from '@/api/lifecycle'
 import { ApiError } from '@/utils/request'
 import { ERROR_CODE } from '@/constants/errorCode'
@@ -37,7 +37,7 @@ import {
   type LifecycleRequestTypeCode,
   type SupplierStatusCode,
 } from '@/constants/auditLogView'
-import type { SupplierAuditDecisionRequest, SupplierItem, SupplierListQuery } from '@/types/supplier'
+import type { SupplierAuditDecisionRequest, SupplierExportQuery, SupplierItem, SupplierListQuery } from '@/types/supplier'
 import type {
   LifecycleRequestResponse,
   LifecycleRequestTodoItem,
@@ -154,6 +154,35 @@ function handleAuditSizeChange(size: number) {
   auditQuery.page_size = size
   auditQuery.page = 1
   void fetchAuditList()
+}
+
+/* ---------------------------------------------------------------- 导出 Excel（接口契约文档 §1.9 GET /suppliers/export，只读，需求定稿 2026-10-16） */
+
+/**
+ * 页头「导出 Excel」：复用当前列表查询条件 auditQuery.keyword / auditQuery.status（trim 空则不传该参数），
+ * 走 request 的 blob 通道全量导出——§1.9 口径只传 status/keyword，**不传 page/page_size**，
+ * 落盘由 api/supplier.ts exportSuppliersApi 触发并 resolve 文件名。业务员页 SupplierListView.handleExport 同款范式。
+ * 角色/状态维度：本按钮**不**叠加门控——路由守卫 meta.roles=['AUDITOR'] 已承担角色校验，
+ * 导出只读不改任何状态（后端 @PreAuthorize 与 §1.3 列表一致），越权仍由服务端 40301 兜底，前端隐藏只是体验层。
+ * 导出期间 exporting=true → 按钮 loading 防重复点击；成功提示展示落盘文件名，
+ * 失败复用本文件既有 showRequestError（blob 错误已由 request 拦截器读回成 ApiError，message 透传后端文案）。
+ */
+const exporting = ref(false)
+
+async function handleAuditExport() {
+  if (exporting.value) return
+  exporting.value = true
+  try {
+    const params: SupplierExportQuery = {}
+    if (auditQuery.keyword.trim()) params.keyword = auditQuery.keyword.trim()
+    if (auditQuery.status) params.status = auditQuery.status
+    const fileName = await exportSuppliersApi(params)
+    ElMessage.success(`导出成功，已开始下载：${fileName}`)
+  } catch (err) {
+    showRequestError(err)
+  } finally {
+    exporting.value = false
+  }
 }
 
 onMounted(() => {
@@ -491,7 +520,11 @@ async function loadDetailQuiet(supplierId: number) {
           <template v-if="currentView === 'audit-list'">
             <div class="page-header">
               <span class="page-title">待审核准入供应商申请</span>
-              <el-button type="primary" plain @click="fetchAuditList">刷新列表</el-button>
+              <div class="header-actions">
+                <el-button type="primary" plain @click="fetchAuditList">刷新列表</el-button>
+                <!-- 只读导出（§1.9，需求定稿 2026-10-16）：按当前 keyword/status 全量导出，不传 page/page_size；角色校验由路由守卫承担 -->
+                <el-button :loading="exporting" @click="handleAuditExport">导出 Excel</el-button>
+              </div>
             </div>
             <el-form :inline="true" class="filter-form">
               <el-form-item label="供应商名称">

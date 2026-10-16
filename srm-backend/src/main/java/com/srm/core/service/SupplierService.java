@@ -3,9 +3,12 @@ package com.srm.core.service;
 import com.srm.core.common.PageResult;
 import com.srm.core.dto.supplier.SupplierAuditDecisionRequest;
 import com.srm.core.dto.supplier.SupplierCreateRequest;
+import com.srm.core.dto.supplier.SupplierExportRow;
 import com.srm.core.dto.supplier.SupplierResponse;
 import com.srm.core.dto.supplier.SupplierSubmitRequest;
 import com.srm.core.dto.supplier.SupplierUpdateRequest;
+
+import java.util.List;
 
 /**
  * 供应商主链服务（契约 §1.1–§1.5 模块一 + §2.1/§2.2 模块二状态机，
@@ -30,6 +33,17 @@ public interface SupplierService {
 
     /** §1.3 列表：后端强制 §0 行级隔离；status/keyword 过滤拼进查询；分页 page/page_size */
     PageResult<SupplierResponse> list(String status, String keyword, int page, int pageSize);
+
+    /**
+     * GET /suppliers/export 档案导出查询（需求定稿 2026-10-16，新增只读能力）：
+     * status/keyword 语义与 §1.3 完全一致，且<b>数据可见范围必须与 list 同源</b>——
+     * 实现上复用 list 的同一套 §0 行级隔离查询条件工厂（STAFF 仅"公有区 + 本人 DRAFT/RETURNED"，
+     * AUDITOR/ADMIN 全量，裁决 2026-10-14 晚），导出不是隔离规则的旁路。
+     * 命中超过 5000 行时截断至前 5000 行（防内存/性能风险，不报错）；
+     * 码值→中文由 SupplierExportRow 完成；只读能力，不写 AuditLog。
+     * 二进制 xlsx 流的写出归 Controller（本方法不感知 HttpServletResponse）。
+     */
+    List<SupplierExportRow> exportRows(String status, String keyword);
 
     /** §1.4 详情：不存在/已逻辑删除 40401；命中他人私有在途区 40302 */
     SupplierResponse get(Long id);

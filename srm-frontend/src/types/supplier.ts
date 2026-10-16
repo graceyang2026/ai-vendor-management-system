@@ -103,6 +103,18 @@ export interface SupplierListQuery {
 }
 
 /**
+ * 导出查询参数（GET /suppliers/export，需求定稿 2026-10-16，只读）。与 §1.3 列表 status/keyword 同语义，
+ * 但为全量口径：<b>不含 page/page_size</b>（后端全量导出，命中超 5000 行截断不报错，见 SupplierController.export）。
+ * status/keyword 均可选，空则不传该参数（由调用方按当前列表条件裁剪）。物理命名维持 snake_case；
+ * status 取 SupplierStatus 六态码（传码，中文列头由后端 xlsx 内生成，前端不造中文字段）。
+ * 契约缺口：docs/api-spec.md 暂未收录本端点（基准取后端实文 @RequestParam），已在会话留痕上报 tech-lead。
+ */
+export interface SupplierExportQuery {
+  status?: SupplierStatusCode
+  keyword?: string
+}
+
+/**
  * 新增/编辑弹窗表单 UI 模型（非契约对象，仅本页表单态）：
  * 选填字段以空串占位（提交时构建请求体，空串字段不提交，见 SupplierListView.buildCreatePayload）；
  * version 不入表单——编辑提交时取自详情/列表行快照（SupplierItem.version）。

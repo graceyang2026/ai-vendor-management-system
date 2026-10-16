@@ -184,6 +184,7 @@ interface SupplierSubmitRequest {
 | POST | `/suppliers` | STAFF | 建档，创建 `DRAFT` |
 | PUT | `/suppliers/{id}` | STAFF（本人） | 仅 `DRAFT`/`RETURNED` 可编辑，其余状态 `40302` |
 | GET | `/suppliers` | ALL（**按 §0 隔离规则**） | query: `status?`, `keyword?`, `page`, `page_size`；STAFF 结果集 = 公有资产区 + 本人草稿/退回；AUDITOR/ADMIN 为全量 |
+| GET | `/suppliers/export` | ALL（**按 §0 隔离规则**，同 `GET /suppliers`） | query: `status?`, `keyword?`（**无 page/page_size**，全量口径）；按查询条件导出档案 xlsx（需求定稿 20261016，只读、不写审计）；**全系统唯一绕过 HTTP 200 + JSON `ApiResponse` 约定的端点**：成功回二进制流（`Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`、`Content-Disposition: attachment; filename=suppliers_export.xlsx`），失败仍回 JSON `ApiResponse`；命中超 5000 行截断不报错（详见下方 `GET /suppliers/export` 专节） |
 | GET | `/suppliers/{id}` | ALL（**按 §0 隔离规则**） | 详情，含最近一次归档绩效评级；命中规则 A 但非本人 → `40302` |
 | DELETE | `/suppliers/{id}` | STAFF（本人） | 仅本人 `DRAFT` 逻辑删除，其余状态 `40302` |
 | POST | `/suppliers/{id}/submit` | STAFF（本人） | `DRAFT`/`RETURNED` → `PENDING_REVIEW`；要求已上传至少一份未过期营业执照资质，否则 `40001`。请求体 `SupplierSubmitRequest`（裁决 20261013 候选 B：**仅 `version` 一字段**，取 `SupplierResponse.version`），缺失或版本不匹配返回 `40901`（§0 乐观锁全量四实体口径延伸至状态迁移） |
@@ -225,6 +226,18 @@ interface QualificationReviewRequest {
 - 前置拒绝返回 `40302`：资质所属供应商非 `NORMAL`（准入期件不走本接口，跟随 #7 连带批复）、或资质当前非 `PENDING`（已批/已驳不可重复审）。
 
 Response `data`: `QualificationResponse`
+
+### `GET /suppliers/export`（需求定稿 20261016 · xlsx 全量导出）
+
+按查询条件将**当前用户可见范围**内的供应商档案导出为 xlsx。后端实文：`SupplierController.export` + `SupplierServiceImpl.exportRows` + `SupplierExportRow`（17 列中文表头，字段全部源自 `SupplierResponse` 附录 A1）。
+
+- **入参（Query）**：`status?`（六态之一，可选）、`keyword?`（名称/税号模糊，可选）；**无 `page`/`page_size`**，命中即全量（截断见下）。
+- **角色**：`hasAnyRole('ADMIN','STAFF','AUDITOR')`，与 `GET /suppliers` 逐字一致；非三角色 `40301`、未登录 `40101`（均以 JSON 响应返回）。
+- **行级隔离（acceptance §4）**：导出复用 `GET /suppliers` 的同一查询条件工厂（后端 `isolationScopedWrapper`），STAFF 结果集 = 公有区 + 本人 `DRAFT`/`RETURNED`，AUDITOR/ADMIN 全量；导出**不是隔离旁路**，绝不因导出泄露他人私有草稿。
+- **响应（唯一约定例外）**：成功直接写 xlsx 二进制流至 `HttpServletResponse`，`Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`、`Content-Disposition: attachment; filename=suppliers_export.xlsx`，sheet 名「供应商档案」；这是全系统**唯一绕过「HTTP 200 + JSON `ApiResponse`」的端点**。任何异常都发生在零字节写出之前（先取数、后设头、再写流），失败仍走全局 JSON `ApiResponse`。
+- **行数上限（acceptance §5）**：命中记录 > 5000 时后端截断至前 5000 行导出（查询侧 `Page(1,5000)` + 结果侧防御 `subList`），不报错。
+- **只读**：不写 `AuditLog`（与 `GET /suppliers/{id}/lifecycle-requests` 只读列表同口径）。
+- **导出列（17，中文表头，顺序由 `@ExcelProperty(index)` 钉死）**：供应商ID / 供应商名称 / 统一社会信用代码 / 供应商类型 / 联系人 / 联系电话 / 联系邮箱 / 地址 / 备注 / 合作生效日期 / 合作到期日期 / 状态 / 最新绩效评级 / 风险预警 / 创建人 / 创建时间 / 更新时间。码值→中文在后端完成（状态六态、类型三码、风险 `true→是/false→否/null→空串`），文案与前端 `auditDictionary` 逐字同源；有意排除 `version`/`created_by`（内部 ID，创建人以 `created_by_name` 呈现）/`business_license_url`（派生归二期恒 null）。
 
 ### 文件上传
 
