@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="zh"><head><meta charset="utf-8"><title>验收标准（核心铁律）</title>
+<style>
+body{font-family:"PingFang SC","Helvetica",sans-serif;font-size:11pt;line-height:1.6;}
+h1{font-size:20pt;} h2{font-size:16pt;border-bottom:1px solid #ccc;}
+h3{font-size:13pt;} h4{font-size:12pt;}
+code{font-family:"Menlo",monospace;background:#f2f2f2;padding:1px 3px;}
+blockquote{color:#444;border-left:3px solid #bbb;margin-left:0;padding-left:12px;background:#fafafa;}
+ul{margin:4px 0 10px 22px;} li{margin:2px 0;}
+</style></head><body>
+<h1>验收标准（核心铁律）</h1>
+<blockquote>
+<p>对应 <code>.qoder/rules.md</code> 第 4.2 / 4.3 / 4.5 节的三条"核心铁律"。这三条风险最高，最容易在"开发自己写测试、自己判定通过"的模式下被绕过，因此单独补充可测试的验收标准，供 Qoder 写单元/集成测试时对照，也供人工验收时使用。</p>
+</blockquote>
+<blockquote>
+<p>本文档只覆盖铁律场景，不覆盖全部接口；普通 CRUD 接口的验收依据是 <code>docs/api-spec.md</code> 本身的字段规则与错误码表。</p>
+</blockquote>
+<blockquote>
+<p><strong>变更登记机制已废止（用户裁决 2026-10-11）</strong>：本文档不再维护「版本修订记录」表，用例的新增/修订历史由 git 提交与测试代码本身承载。不变的硬约束：<strong>每条铁律验收用例写完必须先对齐契约（<code>api-spec.md</code> 及其 §0「目标态 DDL 增量」），再写测试</strong>；契约变动时，必须同步检查本文档是否需补用例。</p>
+</blockquote>
+<hr/>
+<h2>§1 供应商生命周期状态机与并发控制（对应 rules.md 4.2）</h2>
+<h3>1.1 状态机只能合法迁移，禁止跳状态</h3>
+<ul>
+<li><strong>Given</strong> 供应商当前状态为 <code>DRAFT</code></li>
+<li><strong>When</strong> 调用 <code>POST /suppliers/{id}/audit</code>（该接口只允许在 <code>PENDING_REVIEW</code> 时调用）</li>
+<li><strong>Then</strong> 返回 <code>40302</code>，供应商状态不变</li>
+</ul>
+<ul>
+<li><strong>Given</strong> 供应商当前状态为 <code>NORMAL</code></li>
+<li><strong>When</strong> 尝试用任何接口直接把 <code>status</code> 改成 <code>SUSPENDED</code>（而不是走 <code>LifecycleRequest</code>）</li>
+<li><strong>Then</strong> 不存在这样的接口；<code>PUT /suppliers/{id}</code> 的 <code>SupplierUpdateRequest</code> 里没有 <code>status</code> 字段，无法绕过</li>
+</ul>
+<h3>1.2 PENDING_REVIEW 期间乐观锁拒绝 STAFF 并发写</h3>
+<ul>
+<li><strong>Given</strong> 供应商状态为 <code>PENDING_REVIEW</code>，<code>version = 3</code></li>
+<li><strong>When</strong> STAFF 调用 <code>PUT /suppliers/{id}</code> 或 <code>DELETE /suppliers/{id}</code></li>
+<li><strong>Then</strong> 返回 <code>40302</code>（当前状态不允许该操作），不因为携带了旧 <code>version</code> 而放行</li>
+</ul>
+<ul>
+<li><strong>Given</strong> AUDITOR 正在审核同一供应商（已读取 <code>version = 3</code>），另一个审核请求已先提交并把 <code>version</code> 改成了 <code>4</code></li>
+<li><strong>When</strong> AUDITOR 用 <code>version = 3</code> 调用 <code>POST /suppliers/{id}/audit</code></li>
+<li><strong>Then</strong> 返回 <code>40901</code>（并发冲突），供应商状态不发生变化，前端需重新拉取详情后重试</li>
+</ul>
+<h4>生命周期裁决并发冲突（停用/恢复/淘汰 decision）</h4>
+<ul>
+<li><strong>Given</strong> 一条 <code>PENDING</code> 生命周期申请关联的供应商 <code>version = 5</code>，AUDITOR 已读取该 <code>version</code>；期间另一并发操作已将供应商 <code>version</code> 改为 <code>6</code></li>
+<li><strong>When</strong> AUDITOR 用 <code>version = 5</code> 调用 <code>POST /lifecycle-requests/{id}/decision</code>（<code>LifecycleDecisionRequest</code> 携带 <code>version</code>）</li>
+<li><strong>Then</strong> 返回 <code>40901</code>（<code>OPTIMISTIC_LOCK_CONFLICT</code>，并发冲突），供应商状态与申请记录均不发生变化，生命周期状态不联动，前端需重新拉取详情后重试</li>
+</ul>
+<h3>1.3 停用/恢复/淘汰必须走两步 LifecycleRequest，不能一步到位</h3>
+<ul>
+<li><strong>Given</strong> 供应商状态为 <code>NORMAL</code></li>
+<li><strong>When</strong> STAFF 调用 <code>POST /suppliers/{id}/lifecycle-requests</code>，<code>type=SUSPEND</code></li>
+<li><strong>Then</strong> 创建一条 <code>status=PENDING</code> 的 <code>LifecycleRequest</code>，供应商状态仍为 <code>NORMAL</code>（不因为申请而立刻变化）</li>
+</ul>
+<ul>
+<li><strong>Given</strong> 同一供应商已有一条 <code>type=SUSPEND</code> 且 <code>status=PENDING</code> 的申请</li>
+<li><strong>When</strong> STAFF 再次提交 <code>type=SUSPEND</code> 申请</li>
+<li><strong>Then</strong> 返回 <code>40902</code>（业务冲突）</li>
+</ul>
+<ul>
+<li><strong>Given</strong> 一条 <code>type=SUSPEND</code> 的 <code>PENDING</code> 申请</li>
+<li><strong>When</strong> AUDITOR 调用 <code>POST /lifecycle-requests/{id}/decision</code>，<code>decision=APPROVE</code></li>
+<li><strong>Then</strong> 申请状态变为 <code>APPROVED</code>，供应商状态变为 <code>SUSPENDED</code>，且写入一条 <code>AuditLog</code></li>
+</ul>
+<ul>
+<li><strong>Given</strong> 供应商已处于终态 <code>ELIMINATED</code></li>
+<li><strong>When</strong> STAFF 对该供应商发起任何新的 <code>lifecycle-requests</code></li>
+<li><strong>Then</strong> 请求被拒绝（终态不可逆，不允许再创建申请）</li>
+</ul>
+<h3>1.4 同一供应商同一考核周期只允许一张在途绩效评价单</h3>
+<ul>
+<li><strong>Given</strong> 供应商已存在一张 <code>status=PENDING_REVIEW</code> 的正式绩效评价（<code>supplier_id</code> + <code>period_start</code>/<code>period_end</code> 相同）</li>
+<li><strong>When</strong> STAFF 对同一供应商、同一周期再次调用 <code>POST /performance/evaluations</code></li>
+<li><strong>Then</strong> 返回 <code>40902</code>，不会生成第二张评价单，也不会触发第二次算分</li>
+</ul>
+<h3>1.5 资质文件上传白名单与限额（支撑 <code>POST /files/upload</code>，api-spec 第 2 节）</h3>
+<ul>
+<li><strong>Given</strong> 已登录的 STAFF</li>
+<li><strong>When</strong> 上传 <code>pdf</code>/<code>jpg</code>/<code>jpeg</code>/<code>png</code> 且≤10MB 的文件（multipart 字段名 <code>file</code>）</li>
+<li><strong>Then</strong> 返回 <code>file_url</code>/<code>file_name</code>/<code>size</code>，文件以 UUID 重命名落盘；<code>file_url</code> 可经 <code>/uploads/**</code> 静态映射访问；不写任何业务表、不记审计</li>
+<li><strong>When</strong> 扩展名/MIME 任一不在白名单（如 <code>.exe</code>、伪装扩展名）或超过 10MB 或空文件</li>
+<li><strong>Then</strong> 返回 <code>40001</code>，磁盘无残留；含 <code>../</code> 的原始文件名不得参与落盘路径拼接（防路径穿越）</li>
+<li><strong>When</strong> 未登录或 AUDITOR/ADMIN 调用</li>
+<li><strong>Then</strong> 分别返回 <code>40101</code>/<code>40301</code>（契约限定 STAFF）</li>
+</ul>
+<h3>1.6 供应商 <code>tax_no</code> 全局唯一（对应 api-spec 第 2 节校验规则 + <code>schema.sql</code> 的 <code>supplier</code> 表生成列）</h3>
+<ul>
+<li><strong>Given</strong> 已存在未删除供应商 A，其 <code>tax_no = T</code></li>
+<li><strong>When</strong> STAFF 调用 <code>POST /suppliers</code> 对另一家供应商提交同一 <code>tax_no = T</code></li>
+<li><strong>Then</strong> 返回 <code>40902</code>（业务冲突·税号唯一性）；不产生新记录；失败不写成功审计</li>
+<li><strong>Given</strong> 供应商 A 已被逻辑删除（<code>deleted = 1</code>，生成列 <code>tax_no_active</code> 置 NULL）</li>
+<li><strong>When</strong> STAFF 用同一 <code>tax_no = T</code> 重新建档</li>
+<li><strong>Then</strong> 创建成功，返回新供应商且 <code>status = DRAFT</code>（键位已释放，允许沿用）</li>
+<li><strong>Given</strong> 两个并发 <code>POST /suppliers</code> 携带同一 <code>tax_no = T</code>，且都已通过应用层预检</li>
+<li><strong>When</strong> 两条 INSERT 先后到达数据库</li>
+<li><strong>Then</strong> 仅一条成功，另一条由 <code>UNIQUE(tax_no_active)</code> 拦截，Service 捕获 <code>DuplicateKeyException</code> 并转译 <code>40902</code>（不得原抛出为 <code>50001</code>，也不得露出 SQL 细节）</li>
+<li><strong>When</strong> STAFF 通过 <code>PUT /suppliers/{id}</code> 把自己供应商的 <code>tax_no</code> 改成另一家在用供应商的税号</li>
+<li><strong>Then</strong> 返回 <code>40902</code>；改成自己当前税号（幂等）仍返回成功</li>
+</ul>
+<h3>1.7 建档字段格式校验（对应 api-spec 第 2 节校验规则表）</h3>
+<p>失败均为 <code>code=40001</code>（随 HTTP 200 返回），且 <code>message</code> 必须逐字等于契约固定文案（不得把正则或字段名直输出给前端）。</p>
+<ul>
+<li><strong>When</strong> <code>tax_no</code> 为 17 位、19 位、含小写字母，或含 GB 32100 禁用字符 <code>I</code>/<code>O</code>/<code>Z</code>/<code>S</code>/<code>V</code></li>
+<li><strong>Then</strong> <code>40001</code>，message：<code>统一社会信用代码格式不合法（必须为18位有效字符）</code>；不落库、不记审计</li>
+<li><strong>When</strong> <code>contact_phone</code> 不以 1 开头、第二位不是 3-9、或长度非 11 位（如 <code>01088886666</code> 座机号）</li>
+<li><strong>Then</strong> <code>40001</code>，message：<code>联系电话格式不合法（必须为11位有效手机号）</code></li>
+<li><strong>When</strong> <code>name</code> 为空、纯空格、或长度 1 字符 / 65 字符</li>
+<li><strong>Then</strong> <code>40001</code>，message：<code>供应商名称格式不合法（不得为空格且长度需为2~64字符）</code></li>
+<li><strong>When</strong> <code>contact_name</code> 长度 65 字符（超出契约上限 64）</li>
+<li><strong>Then</strong> <code>40001</code>；而 64 字符必须能完整写入 <code>supplier.contact_name VARCHAR(100)</code>，<strong>不得因列宽不足被截断或转成 <code>50001</code></strong></li>
+<li><strong>Given</strong> 一个格式非法且税号与已有供应商重复的请求</li>
+<li><strong>When</strong> <code>POST /suppliers</code></li>
+<li><strong>Then</strong> 返回 <code>40001</code>（格式校验先行），而不是 <code>40902</code>；两者不得同时返回</li>
+<li><strong>Given</strong> 同一非法输入</li>
+<li><strong>When</strong> 分别经前端表单校验与后端 Bean Validation</li>
+<li><strong>Then</strong> 两侧使用契约里的同一正则（<code>^[0-9A-HJ-NPQRTUWXY]{18}$</code> / <code>^1[3-9]\d{9}$</code> / <code>^\S.{0,62}\S$</code>），判定结果一致，不得出现“前端放行、后端报错”或反之</li>
+</ul>
+<p><strong>必填分层口径（裁决 20261011：应用层强校验 + 数据库兜底防呆）</strong></p>
+<blockquote>
+<p>事实核对（实测 <code>srm-backend/src/main/resources/schema.sql</code> 的 <code>supplier</code> 表）：<code>name</code>/<code>tax_no</code> 已是 <code>NOT NULL</code>（保持不动，作为兜底防呆）；<code>contact_name</code>/<code>contact_phone</code>/<code>contact_email</code>/<code>address</code> 为 <code>NULL</code>，而 SRS 「核心字段规范」将 <code>contact_name</code>/<code>contact_phone</code> 列为必填——该差异按分层口径处理，<strong>不把数据库列收紧为 NOT NULL</strong>（避免历史数据兼容与后续加字段的 DDL 风险）。</p>
+</blockquote>
+<ul>
+<li><strong>Given</strong> <code>contact_name</code>/<code>contact_phone</code> 在 <code>schema.sql</code> 中允许 <code>NULL</code></li>
+<li><strong>When</strong> 通过 API 提交建档但缺失这两个必填项</li>
+<li><strong>Then</strong> Controller 层 Bean Validation（<code>@NotBlank</code>）直接拦下并返回 <code>40001</code>，<strong>不依赖数据库 NOT NULL 兜底</strong>；空值不得落入库中</li>
+<li><strong>Given</strong> 测试库直接写入一行历史脏数据（<code>contact_phone = NULL</code>）</li>
+<li><strong>When</strong> 查询列表/详情</li>
+<li><strong>Then</strong> 正常返回（该字段为 <code>null</code>），不得因读 NULL 而 500——即“写入严、读取宽”分层共存</li>
+<li><strong>When</strong> 本次裁决后检查 DDL</li>
+<li><strong>Then</strong> <code>name</code>/<code>tax_no</code> 的 <code>NOT NULL</code> <strong>不删也不扩</strong>，其余允许 <code>NULL</code> 的列<strong>不改为 NOT NULL</strong>（本次无 DDL 变更）</li>
+</ul>
+<h3>1.8 资质维护与审核闭环（对应 api-spec 第 2 节资质审核闭环 + api-spec §0「目标态 DDL 增量」①）</h3>
+<p>本用例设立的目的是解除旧契约的死锁：准入（<code>NORMAL</code>）后资质过期，旧规则不允许补传，而算分又因过期把 <code>C</code> 判 0，导致只能停用/淘汰。裁决 20261011：放开 <code>NORMAL</code> 上传 + 建立审核闭环。</p>
+<ul>
+<li><strong>Given</strong> 一家 <code>NORMAL</code> 供应商，营业执照已过期（因此 <code>C=0</code>、<code>risk_warning=true</code>）</li>
+<li><strong>When</strong> 本人 STAFF 调 <code>POST /suppliers/{id}/qualifications</code> 上传新营业执照</li>
+<li><strong>Then</strong> 返回成功；新记录 <code>status=PENDING</code>（裁决 20261012 定码：资质三态 <code>PENDING</code>/<code>APPROVED</code>/<code>REJECTED</code>，与供应商/绩效的 <code>PENDING_REVIEW</code> 不同族，本文旧版写 <code>PENDING_REVIEW</code> 属码值混用，已按 <code>schema.sql</code> DEFAULT 与 api-spec §2 更正）；<strong>旧记录仍为 <code>APPROVED</code></strong>（现行有效位不变）；<code>risk_warning</code> <strong>仍为 <code>true</code></strong>、<code>C</code> <strong>仍为 0</strong>——绝不能因为“待审核”就提前解除预警（否则伪造了一个尚未被审核的合规状态）</li>
+<li><strong>Given</strong> 上述待审核资质</li>
+<li><strong>When</strong> AUDITOR 调 <code>POST /qualifications/{id}/review</code>，<code>decision=APPROVE</code></li>
+<li><strong>Then</strong> 新资质置 <code>APPROVED</code>，同 <code>supplier_id</code>+<code>doc_type</code> 的旧资质自动置 <code>REJECTED</code>（数据库记录仍在，不物理删）→ <code>risk_warning</code> 自动置 <code>false</code>，后续评价的合规维度 <code>C</code> 恢复 100；写入 <code>AuditLog</code>（<code>entity_type=SUPPLIER_QUALIFICATION</code>，<code>action=REVIEW_APPROVE</code>——方案甲裁决 20261012：资质复核域用 <code>REVIEW_*</code>，<code>AUDIT_*</code> 专属于供应商准入域；与实存测试 <code>SupplierQualificationAuditRecordTest:61</code> 断言一致，本文旧版写 <code>AUDIT_APPROVE</code> 会把资质留痕串域，已更正）</li>
+<li><strong>When</strong> <code>decision=REJECT</code> 但 <code>comment</code> 为空</li>
+<li><strong>Then</strong> <code>40001</code>（与建档审核同口径，驳回必须给理由）</li>
+<li><strong>When</strong> <code>decision=REJECT</code> 且带 <code>comment</code></li>
+<li><strong>Then</strong> 新资质置 <code>REJECTED</code>，<strong>旧资质保持 <code>APPROVED</code> 不变</strong>，供应商仍为 <code>NORMAL</code> 可正常开展业务（仅预警保留）；不得自动转 <code>SUSPENDED</code>/<code>RETURNED</code></li>
+<li><strong>When</strong> 本人 STAFF 试图审核自己上传的资质，或 ADMIN 试图上传/审核资质</li>
+<li><strong>Then</strong> 均返回 <code>40301</code>（权限矩阵：上传 ✓ 仅 STAFF，审核 ✓ 仅 AUDITOR，ADMIN ✕ 不参与业务）</li>
+<li><strong>When</strong> 一个 <code>supplier_id</code>+<code>doc_type</code> 出现两条 <code>APPROVED</code></li>
+<li><strong>Then</strong> 视为缺陷（契约禁止）；合规算分必须只读现行唯一有效版本，结果不得依赖记录返回顺序</li>
+</ul>
+<hr/>
+<h2>§2 绩效评价防篡改（对应 rules.md 4.3）</h2>
+<h3>2.1 前端物理上无法提交或覆盖分数/评级</h3>
+<ul>
+<li><strong>Given</strong> 任意 <code>PerformanceEvaluationCreateRequest</code> 或 <code>PUT /performance/evaluations/{id}</code> 的请求体</li>
+<li><strong>When</strong> 请求体中包含 <code>total_score</code>、<code>grade</code>、<code>score_quality</code> 等结果字段</li>
+<li><strong>Then</strong> 这些字段不属于 <code>PerformanceFactRecord</code> 的定义，后端 DTO 反序列化时应被忽略；即使客户端强行塞入，落库的评分结果也必须是由 <code>PerformanceScoreCalculator</code> 重新计算的值，不是请求体里的值（验收时对比请求体与落库结果不一致才算通过）</li>
+</ul>
+<h3>2.2 mock 模式下客户端传入的 fact_record 被忽略而非报错</h3>
+<ul>
+<li><strong>Given</strong> <code>POST /performance/evaluations</code>，<code>mode=mock</code>，请求体里仍然带了一份自定义 <code>fact_record</code></li>
+<li><strong>When</strong> 评价创建成功</li>
+<li><strong>Then</strong> 返回的 <code>fact_record</code> 是 <code>MockDataMetricAdapter</code> 生成的数据，不是请求体里传入的值；接口不报错（不是 <code>40001</code>）</li>
+</ul>
+<h3>2.3 算分公式硬编码，不可被参数化影响</h3>
+<ul>
+<li><strong>Given</strong> 一组 <code>fact_record</code>：<code>qc_total_batches=0</code></li>
+<li><strong>When</strong> 调用 <code>POST /performance/evaluations</code> 一步提交</li>
+<li><strong>Then</strong> <code>score_quality=100</code> 且 <code>quality_exempt=true</code>（不因为传入的其他字段变化而改变这条硬编码规则）</li>
+<li><strong>Given</strong> 同一考核期内 <code>total_batches=0</code>（当期无交付业务，而 <code>qc_total_batches&gt;0</code>）</li>
+<li><strong>When</strong> 触发算分</li>
+<li><strong>Then</strong> <code>score_delivery=100</code>（不得因 <code>delayed_batches / total_batches</code> 除零而得到 <code>NaN</code>/异常/0 分），且共用同一个 <code>quality_exempt=true</code> 标识，<strong>不新增 <code>delivery_exempt</code> 列</strong></li>
+</ul>
+<ul>
+<li><strong>Given</strong> 一份 <code>fact_record</code> 对应四个维度的边界值组合</li>
+<li><strong>When</strong> 触发算分</li>
+<li><strong>Then</strong> 综合得分严格等于 <code>Q*0.3 + D*0.25 + P*0.2 + S*0.15 + C*0.1</code>（浮点误差在允许范围内），且评级映射严格按 <code>A≥90 / 80≤B&lt;90 / 70≤C&lt;80 / D&lt;70</code> 分档，不存在可配置的权重覆盖入口</li>
+</ul>
+<h3>2.4 D 级不自动变更供应商状态，必须走人工申请</h3>
+<ul>
+<li><strong>Given</strong> 一次评价复核通过（<code>review</code> → <code>APPROVE</code>）后计算出的 <code>grade=D</code></li>
+<li><strong>When</strong> 归档完成</li>
+<li><strong>Then</strong> 供应商 <code>risk_warning=true</code>，但 <code>status</code> 保持不变（不会被评价接口自动置为 <code>SUSPENDED</code>）；只有后续人工通过 <code>POST /suppliers/{id}/lifecycle-requests</code>（<code>type=SUSPEND</code>）并经 AUDITOR 批准，供应商状态才会变化</li>
+</ul>
+<h3>2.5 提交后立即锁死，复核通过后不可覆盖旧记录</h3>
+<ul>
+<li><strong>Given</strong> <code>POST /performance/evaluations</code> 成功，生成 <code>status=PENDING_REVIEW</code> 的正式评价</li>
+<li><strong>When</strong> 原 STAFF 尝试再次编辑该评价的 <code>fact_record</code></li>
+<li><strong>Then</strong> 返回 <code>40302</code>（仅 <code>RETURNED</code> 状态可编辑）</li>
+</ul>
+<ul>
+<li><strong>Given</strong> 一条评价已被 AUDITOR <code>APPROVE</code> 归档</li>
+<li><strong>When</strong> 任何角色尝试修改该记录的 <code>fact_record</code> 或结果字段</li>
+<li><strong>Then</strong> 该记录永久不可编辑、不可被覆盖（<code>40302</code>；归档即终态，无独立历史表）</li>
+<li><strong>When</strong> 同供应商同周期重新 <code>POST /performance/evaluations</code> 发起新评价</li>
+<li><strong>Then</strong> <strong>允许新建独立新单</strong>（用户裁决 2026-10-15 18:45：维持 DDL/契约现状，本文档旧版本条“同周期已有归档记录时 POST 应被 40902 拦截”属口径错误，已校正）。“一周期一单”仅约束<strong>在途单</strong>（<code>PENDING_REVIEW</code>/<code>RETURNED</code>）：<code>schema.sql</code> 生成列 <code>active_period_key</code> 对在途状态赋值、已归档/逻辑删除置 NULL 释放占位，与契约 §3.1（<code>docs/接口契约文档-供应商与绩效-20261013.md</code> L611、L694：40902 触发条件仅限 PENDING_REVIEW/RETURNED）一致；已归档历史单不受新单影响，同周期可存在多张归档单，供应商 <code>latest_performance_grade</code>/<code>risk_warning</code> 以最近一次归档为准</li>
+</ul>
+<h3>2.6 REJECT 沿用同一条记录，不新建</h3>
+<ul>
+<li><strong>Given</strong> 一条正式评价被 AUDITOR <code>REJECT</code></li>
+<li><strong>When</strong> 查询该评价记录</li>
+<li><strong>Then</strong> <code>status=RETURNED</code>，<code>id</code> 不变；原 STAFF 通过 <code>PUT /performance/evaluations/{id}</code> 改事实重提后，仍是同一个 <code>id</code>，重新触发算分，不产生第二条记录</li>
+</ul>
+<hr/>
+<h2>§3 审计与不可变性（对应 rules.md 4.5）</h2>
+<h3>3.1 关键操作必须全量写入 AuditLog</h3>
+<p>以下每一类操作发生后，必须能在 <code>GET /audit-logs?entity_type=&amp;entity_id=</code> 查到一条对应记录，且 <code>operator_id</code>/<code>operator_role</code>/<code>action</code>/<code>old_status</code>/<code>new_status</code>/<code>result</code> 均不为空（<code>REJECT</code> 类操作 <code>comment</code> 不为空）：</p>
+<ul>
+<li><code>POST /suppliers/{id}/audit</code>（<code>APPROVE</code>/<code>REJECT</code>）→ <code>entity_type=SUPPLIER</code></li>
+<li><code>POST /lifecycle-requests/{id}/decision</code>（<code>APPROVE</code>/<code>REJECT</code>）→ <code>entity_type=LIFECYCLE_REQUEST</code></li>
+<li><code>POST /performance/evaluations/{id}/review</code>（<code>APPROVE</code>/<code>REJECT</code>）→ <code>entity_type=PERFORMANCE_EVALUATION</code></li>
+<li>并发冲突（<code>40901</code>）或业务冲突（<code>40902</code>）导致操作失败时，也应写入一条 <code>result=REJECTED</code> 的记录，而不是静默失败不留痕</li>
+</ul>
+<h3>3.2 正式记录禁止物理删除</h3>
+<ul>
+<li><strong>Given</strong> 一条已提交审核（<code>PENDING_REVIEW</code> 及以后）的供应商记录，或已归档的绩效评价</li>
+<li><strong>When</strong> 尝试删除</li>
+<li><strong>Then</strong> 不存在物理删除该记录的接口/路径；供应商草稿删除仅允许 <code>DRAFT</code> 状态且逻辑删除（<code>deleted</code> 字段），数据库中记录仍存在</li>
+</ul>
+<ul>
+<li><strong>Given</strong> 一条已生成的正式绩效评价（<code>PENDING_REVIEW</code>/<code>APPROVED</code>/<code>RETURNED</code>）</li>
+<li><strong>When</strong> 任何角色尝试删除</li>
+<li><strong>Then</strong> 不存在删除正式评价的接口/路径（绩效无对外草稿态）；正式评价一旦生成即不可物理删除，<code>RETURNED</code> 只能通过 <code>PUT /performance/evaluations/{id}</code> 改事实重提（沿用同 id）</li>
+</ul>
+<hr/>
+<h2>§4 权限隔离与数据范围（对应 SRS §3 权限矩阵 + §7.1 “权限隔离”验收条件 + rules.md 4.1）</h2>
+<blockquote>
+<p>本节为补齐项：SRS 「核心验收条件」明列“涵盖<strong>权限隔离</strong>…”，但本文档旧版 §1~§3 完全未覆盖。后端已有 RBAC 底座：Controller <code>@PreAuthorize("hasRole('...')")</code> 做粗粒度拦截，Service 层 <code>RoleGuard</code> 做二次校验（<code>requireRole</code>→<code>40301</code>、<code>requireStatusAllowed</code>/<code>requireSelf</code>→<code>40302</code>）。</p>
+</blockquote>
+<h3>4.1 前后端双层校验，前端隐藏不算安全边界</h3>
+<ul>
+<li><strong>Given</strong> 一个已登录但无权的角色（如 ADMIN 请求业务写接口）</li>
+<li><strong>When</strong> 绕过前端、直接携合法 token 调接口</li>
+<li><strong>Then</strong> 后端仍拒绝：角色不匹配 → <code>40301</code>；状态/本人不符 → <code>40302</code>；不得因为“前端没显按钮”而默认放行</li>
+</ul>
+<h3>4.2 ADMIN 零业务写（严格管理/业务分离）</h3>
+<ul>
+<li><strong>When</strong> ADMIN 分别调用 <code>POST /suppliers</code>、<code>PUT /suppliers/{id}</code>、<code>DELETE /suppliers/{id}</code>、<code>submit</code>、<code>audit</code>、<code>POST /suppliers/{id}/qualifications</code>、<code>POST /qualifications/{id}/review</code>、<code>lifecycle-requests</code>、<code>decision</code>、<code>performance/evaluations</code></li>
+<li><strong>Then</strong> 全部 <code>40301</code>（权限矩阵中 ADMIN 对供应商新增/编辑/审批/上传/状态决策均为 ✕）；ADMIN 只能调 <code>GET</code> 类与 <code>/users</code> 系列</li>
+</ul>
+<h3>4.3 AUDITOR 零业务写，只做决策</h3>
+<ul>
+<li><strong>When</strong> AUDITOR 调用建档/编辑/上传资质/提交/发起评价</li>
+<li><strong>Then</strong> 全部 <code>40301</code>；只能调 <code>audit</code>、<code>review</code>、<code>decision</code>（均为“最终决策”类动作）</li>
+</ul>
+<h3>4.4 数据可见性分层隔离（裁决 20261011，对应 api-spec §0 规则 A/B/C）</h3>
+<ul>
+<li><strong>Given</strong> STAFF-A 名下有 <code>DRAFT</code> 与 <code>RETURNED</code> 各一个供应商，STAFF-B 已登录</li>
+<li><strong>When</strong> STAFF-B 调 <code>GET /suppliers</code></li>
+<li><strong>Then</strong> 结果集<strong>不包含</strong> STAFF-A 的这两个档案（后端拼 <code>created_by</code> 条件，而不是返回全量由前端过滤）；直接访问其 ID 的 <code>GET /suppliers/{id}</code> → <code>40302</code></li>
+<li><strong>Given</strong> 一家 <code>NORMAL</code> 供应商由 STAFF-A 创建</li>
+<li><strong>When</strong> STAFF-B 或 AUDITOR 查询列表/详情/资质/绩效</li>
+<li><strong>Then</strong> 均可见（规则 B：准入即公有资产，全公司只读共享），但 STAFF-B 试图编辑/删除它 → <code>40302</code></li>
+<li><strong>Given</strong> STAFF-A 创下的供应商被 AUDITOR 审核驳回过</li>
+<li><strong>When</strong> STAFF-A 查 <code>GET /audit-logs</code>（规则 C）</li>
+<li><strong>Then</strong> 能看到该条记录（自己名下资产的他人操作留痕），判定条件是 <code>operator_id = 本人</code> OR <code>supplier_id IN (本人创建的供应商)</code></li>
+<li><strong>When</strong> STAFF-B 查同一条件下看不到不属于自己资产的操作记录；而 AUDITOR/ADMIN 查得全量</li>
+<li><strong>Then</strong> 隔离生效：STAFF 结果集必须是 AUDITOR 结果集的真子集，且 <code>audit_log.supplier_id</code> 冗余列已写入才能跑通本用例</li>
+</ul>
+<h2>§5 查询性能基准（对应 SRS §7.1 “普通供应商查询响应时间原则上不超过 3 秒”）</h2>
+<p>裁决 20261011：MVP <strong>必须验</strong>，但拒绝 JMeter/LoadRunner 重型压测链，采用“集成测试计时断言 + 日志告警”轻量方案。</p>
+<h3>5.1 集成测试硬断言</h3>
+<ul>
+<li><strong>Given</strong> 测试库中预置 1 万条供应商种子数据</li>
+<li><strong>When</strong> 在 <code>SupplierControllerTest</code> 用 Spring <code>StopWatch</code>（或 <code>System.currentTimeMillis()</code>）对 <code>GET /suppliers</code>（默认 <code>page_size=20</code>）与 <code>GET /suppliers/{id}</code> 计时</li>
+<li><strong>Then</strong> 单次耗时 <code>&lt; 3000ms</code>（<code>assertThat(executionTime).isLessThan(3000L)</code>）；断言包含分页命中 <code>total</code> 正确，防止为了跑赢而退化为全表查询</li>
+</ul>
+<h3>5.2 慢请求日志告警</h3>
+<ul>
+<li><strong>Given</strong> 接口统一经 Web 日志切面记录 <code>execution_time_ms</code>（**现状核实：<code>srm-backend</code> 目前没有任何 <code>*Aspect</code> 切面类，本项属新增代码**，实现时也可用 <code>HandlerInterceptor</code> 等效实现）</li>
+<li><strong>When</strong> <code>GET /suppliers</code> 系列耗时超 <code>3000ms</code></li>
+<li><strong>Then</strong> 自动打 <code>WARN</code> 日志并带 <code>[PERF_THRESHOLD_EXCEEDED]</code> 标识，便于事后追溯与慢查询优化；不得因此中断请求或抛错</li>
+</ul>
+</body></html>
