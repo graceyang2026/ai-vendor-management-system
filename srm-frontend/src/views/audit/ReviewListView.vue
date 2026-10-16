@@ -207,6 +207,21 @@ async function openAuditPage(row: SupplierItem) {
   await loadDetail(row.id)
 }
 
+/**
+ * 「详情/日志」：每一行的全生命周期视图入口（统一可见，不掺角色/状态门控——
+ * 对齐业务员页 SupplierListView L695 同名入口体验；入口可见性≠安全边界，
+ * AUDITOR 读 §1.4 详情与 §4.4 规则C 全量追溯日志的权限后端已就绪）。
+ */
+async function openDetailLog(row: SupplierItem) {
+  // 与 openAuditPage 同管线：resetAuditForm（防换行残留脏签署状态）→ 行快照占位 → navigateTo → 重拉 §1.4；
+  // 语义差异=纯只读视角：签署表单区由详情视图内 isPendingReview(currentSupplier) 自行门控，
+  // 非 PENDING_REVIEW 行自动降级为只读 el-alert——视图天然支持任意状态，入口不复制状态机。
+  resetAuditForm()
+  currentSupplier.value = row
+  navigateTo('audit-detail')
+  await loadDetail(row.id)
+}
+
 /** 「查看资质档案」：非待审核行的只读入口（AUDITOR 视角 §1.8 全量可见；NORMAL 供应商行内另有 §2.3 审批）。 */
 const qualificationDialogVisible = ref(false)
 const qualificationSupplier = ref<SupplierItem | null>(null)
@@ -521,8 +536,11 @@ async function loadDetailQuiet(supplierId: number) {
                   <el-tag :type="getStatusTagType(scope.row.status)">{{ getStatusLabel(scope.row.status) }}</el-tag>
                 </template>
               </el-table-column>
-              <el-table-column label="合规审核" width="160" fixed="right">
+              <el-table-column label="合规审核" width="240" fixed="right">
                 <template #default="scope">
+                  <!-- 统一「详情/日志」入口：每行无条件渲染（对齐业务员页 SupplierListView L695）；
+                       入口可见性≠安全边界，读接口权限本就宽松，后端才是校验方 -->
+                  <el-button size="small" type="primary" link @click="openDetailLog(scope.row)">详情/日志</el-button>
                   <!-- 状态×角色双维度：仅 PENDING_REVIEW 行给签署入口；其余状态只读查看资质档案（§1.8 ALL 可读） -->
                   <el-button
                     v-if="isPendingReview(scope.row)"
@@ -553,7 +571,11 @@ async function loadDetailQuiet(supplierId: number) {
           <!-- 2. 准入合规审核详情（§1.4 档案 + §1.8/§2.3 资质 + §2.2 签署 + 追溯日志） -->
           <template v-else-if="currentView === 'audit-detail' && currentSupplier">
             <div class="page-header">
-              <span class="page-title">供应商准入合规审核 - {{ currentSupplier.name }}</span>
+              <!-- 动态标题：PENDING_REVIEW 行=合规审核工作台视角；非待审核行=全生命周期档案视角
+                   （后者文案与业务员页 SupplierListView「供应商全生命周期档案」对齐） -->
+              <span class="page-title">
+                {{ isPendingReview(currentSupplier) ? '供应商准入合规审核' : '供应商全生命周期档案' }} - {{ currentSupplier.name }}
+              </span>
               <el-button @click="navigateTo('audit-list')">返回待审列表</el-button>
             </div>
 

@@ -33,7 +33,6 @@ import {
   COMPLIANCE_READONLY_NOTICE,
   FACT_TAMPER_ALERT,
   GRADE_CD_WARNING_NOTICE,
-  MOCK_FACT_NOTICE,
   MOCK_RESUBMIT_FACT_NOTICE,
   PERFORMANCE_FACT_CARDS,
   PERFORMANCE_VALIDATION,
@@ -56,8 +55,9 @@ import type { SupplierItem } from '@/types/supplier'
  *   公式一律不实现；本页只放静态权重说明，真实分数仅在提交成功弹窗展示后端响应 result（只读）。
  * - B3=甲：「考评目标供应商」下拉 = 既有 §1.3 GET /suppliers 全量（不前端过滤状态；
  *   ELIMINATED 等非法目标由后端 40401/40001 兜底，前端按 errorCode 映射提示）；显示名称、提交 supplier_id。
- * - B4=甲：「演示模拟数据 (Mock Mode)」按钮=真实提交语义：点击后本单切为 mode=mock 提交
- *   （事实输入区置灰禁用并提示"事实数据将由服务端演示生成"），POST 携带 "mode": "mock"；默认 manual。
+ * - B4 口径更新（用户 2026-10-16 指示）：「演示模拟数据 (Mock Mode)」按钮已从前端移除（隐藏入口）。
+ *   后端 mock 能力（MockDataMetricAdapter、mode=mock 契约）保留不动，mode=mock 仅可由 API 直调产生。
+ *   formMode 恒为 manual；重提态保留防御：原单 mode=mock 时事实区禁用+提示（§3.2 按落库 mode 取适配器）。
  * - 合规维度卡：无输入项（原型 qualification_expired radio 已删，C 由后端自动读 APPROVED 资质计算）。
  * - §3.2 重提：RETURNED 且本人创建的行「修改并重提」→ 载入 §3.5 fact_record 回填表单，
  *   PUT 带 version、不传 mode；后端重提后清空上次复核痕迹（reviewed_*），展示以接口响应为准。
@@ -171,7 +171,7 @@ const EMPTY_FACTS: FactFormModel = {
 }
 
 const submitting = ref(false)
-/** 取数模式（B4=甲）：默认 manual；Mock 按钮切 mock 后事实区禁用，提交仍走真实 POST */
+/** 取数模式：恒为 manual（Mock 按钮已按用户 2026-10-16 指示移除入口） */
 const formMode = ref<EvaluationModeCode>(EVALUATION_MODE.MANUAL)
 
 const isResubmit = ref(false)
@@ -266,28 +266,16 @@ function backToList() {
   void fetchList()
 }
 
-/** B4=甲：Mock 按钮切换本单为 mode=mock 提交态（再次点击恢复 manual）；重提态不出现该按钮（不传 mode） */
-const mockActive = computed(() => formMode.value === EVALUATION_MODE.MOCK)
-
 /**
- * 事实输入区是否禁用（两种来源）：
- * 1) 新建态切到 mode=mock（B4=甲：服务端生成事实）；
- * 2) 重提态且该单原 mode=mock（后端 §3.2 按落库 mode 取适配器，提交体里的 fact_record 会被覆盖）。
+ * 防御逻辑（用户 2026-10-16 指示保留）：重提态且原单 mode=mock 时禁用事实区。
+ * 后端 §3.2 按落库 mode 取适配器，提交体里的 fact_record 会被服务端演示数据覆盖，
+ * 若不禁用将造成"改了事实却没生效"的误导 UX。
  */
 const factAreaDisabled = computed(
-  () => mockActive.value || editingEvaluation.value?.mode === EVALUATION_MODE.MOCK,
+  () => editingEvaluation.value?.mode === EVALUATION_MODE.MOCK,
 )
 
-const factAreaNotice = computed(() =>
-  isResubmit.value ? MOCK_RESUBMIT_FACT_NOTICE : MOCK_FACT_NOTICE,
-)
-
-function toggleMockMode() {
-  formMode.value = mockActive.value ? EVALUATION_MODE.MANUAL : EVALUATION_MODE.MOCK
-  if (mockActive.value) {
-    ElMessage.info(MOCK_FACT_NOTICE)
-  }
-}
+const factAreaNotice = MOCK_RESUBMIT_FACT_NOTICE
 
 function buildFactRecordOrNull(): PerformanceFactRecord | null {
   const record: Partial<PerformanceFactRecord> = {}
@@ -351,12 +339,10 @@ async function handleSubmit() {
     period_end: (formModel.periodRange as [string, string])[1],
     mode: formMode.value,
   }
-  if (!mockActive.value) {
-    // mode=manual 必带 fact_record；mode=mock 不提交 fact_record（服务端生成，传了也被忽略——不如不传）
-    const factRecord = buildFactRecordOrNull()
-    if (!factRecord) return
-    payload.fact_record = factRecord
-  }
+  // mode=manual 必带 fact_record（Mock 按钮已移除，新建态 mode 恒为 manual）
+  const factRecord = buildFactRecordOrNull()
+  if (!factRecord) return
+  payload.fact_record = factRecord
   submitting.value = true
   try {
     const res = await createEvaluationApi(payload)
@@ -602,7 +588,7 @@ function supplierDisplayName(id?: number | null): string {
             </el-tag>
           </el-form-item>
 
-          <!-- 客观履约事实输入区（契约附录 A4.1 的 8 字段；mock 态禁用，B4=甲） -->
+          <!-- 客观履约事实输入区（契约附录 A4.1 的 8 字段；重提态原单 mode=mock 时禁用） -->
           <div
             v-for="card in PERFORMANCE_FACT_CARDS"
             :key="card.title"
@@ -645,17 +631,6 @@ function supplierDisplayName(id?: number | null): string {
           <el-form-item style="margin-top: 24px">
             <el-button type="primary" size="large" :loading="submitting" @click="handleSubmit">
               {{ isResubmit ? '提交修正事实并重提' : '提交客观事实单' }}
-            </el-button>
-            <!-- B4=甲：真实提交语义开关（重提态不提供，防借重提切模式） -->
-            <el-button
-              v-if="!isResubmit"
-              size="large"
-              :type="mockActive ? 'warning' : 'default'"
-              :plain="!mockActive"
-              :disabled="submitting"
-              @click="toggleMockMode"
-            >
-              {{ mockActive ? '已切换演示模式 (点击恢复真实录入)' : '演示模拟数据 (Mock Mode)' }}
             </el-button>
             <el-button size="large" :disabled="submitting" @click="backToList">取消</el-button>
           </el-form-item>
