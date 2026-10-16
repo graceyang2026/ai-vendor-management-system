@@ -373,6 +373,38 @@ class SupplierIntegrationTest {
                 .andExpect(jsonPath("$.code").value(40401));
     }
 
+    /**
+     * 用户裁决 2026-10-16：归档两列（latest_performance_grade / risk_warning）读侧透出到
+     * SupplierResponse——真实 H2 全链路验证：建档后直插两列（模拟 §3.3 归档联动回写）→
+     * GET 详情/列表均回存量值；business_license_url 仍归二期恒 null。
+     */
+    @Test
+    void archivedGradeAndRiskWarningColumnsSurfaceInDetailResponse() throws Exception {
+        String token = loginToken("staff01", "Staff@123");
+        String name = "归档列透出" + TAX_SEQ.getAndIncrement();
+        long id = createViaApi(token, name, nextTaxNo()).get("id").asLong();
+
+        Supplier row = supplierMapper.selectById(id);
+        row.setLatestPerformanceGrade("C");
+        row.setRiskWarning(Boolean.TRUE);
+        assertThat(supplierMapper.updateById(row)).isEqualTo(1);
+
+        mockMvc.perform(get("/api/v1/suppliers/" + id)
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.latest_performance_grade").value("C"))
+                .andExpect(jsonPath("$.data.risk_warning").value(true))
+                .andExpect(jsonPath("$.data.business_license_url").value(nullValue()));
+
+        // 列表同一 toResponse 装配链路，存量列同样透出
+        mockMvc.perform(get("/api/v1/suppliers")
+                        .header("Authorization", "Bearer " + token)
+                        .param("keyword", name))
+                .andExpect(jsonPath("$.code").value(0))
+                .andExpect(jsonPath("$.data.list[0].latest_performance_grade").value("C"))
+                .andExpect(jsonPath("$.data.list[0].risk_warning").value(true));
+    }
+
     // ==================== §1.5 逻辑删除 + 税号位释放（验收 §1.6） ====================
 
     @Test

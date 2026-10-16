@@ -10,9 +10,10 @@ import lombok.ToString;
 /**
  * 资质响应体（契约附录 A2 —— <b>13 字段一个不能少</b>，表 supplier_qualification）。
  *
- * 与"归二期"的 SupplierResponse 派生三枚不同：{@code expired} 是<b>同表字段比较</b>
+ * 与 SupplierResponse 的跨表派生字段不同（那三枚中仅 business_license_url 仍归二期，
+ * 归档两枚已于裁决 2026-10-16 开启存量透出）：{@code expired} 是<b>同表字段比较</b>
  * （expiry_date < 今天）的契约必备派生位，本批即实现（用户口径 2026-10-14），
- * 豁免仅针对跨表派生的 business_license_url / latest_performance_grade / risk_warning。
+ * 无需为此处的同表比较开例外；跨表取数的二期豁免现在只剩 business_license_url。
  *
  * version 为 §2.3 存续期单独审批入参 {@code QualificationReviewRequest.version} 的唯一取值链，
  * 每行必须携带（契约 §1.8 业务约束）。

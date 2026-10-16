@@ -58,8 +58,9 @@ import static org.mockito.Mockito.when;
  * 4. get：仅 STAFF 访问他人私有在途区（DRAFT/RETURNED）→ 40302；AUDITOR/ADMIN 全量可见；
  *    不存在/已逻辑删除 → 40401
  * 5. delete：仅本人 DRAFT；逻辑删除走 deleteById（@TableLogic）
- * 6. 派生字段归二期（用户裁决 2026-10-14 16:15）：business_license_url / latest_performance_grade /
- *    risk_warning 一律 null，本批不得出现任何派生计算。
+ * 6. 派生字段读侧口径（用户裁决 2026-10-16 修订，原 2026-10-14 16:15"归二期"仅对
+ *    business_license_url 维持）：latest_performance_grade / risk_warning 从实体存量列透出
+ *    （§3.3 归档联动已写侧落库），business_license_url 仍恒 null；本类不得做任何派生计算。
  */
 @ExtendWith(MockitoExtension.class)
 class SupplierServiceImplTest {
@@ -187,7 +188,7 @@ class SupplierServiceImplTest {
         assertThat(resp.getTaxNo()).isEqualTo("91330100MA27XXXX8X");
         assertThat(resp.getEffectiveDate()).isEqualTo("2026-01-01");
         assertThat(resp.getExpiryDate()).isEqualTo("2028-12-31");
-        // 派生字段归二期：物理字段必须在，但一律 null（用户裁决 2026-10-14 16:15）
+        // 建档当场：内存实体归档两列尚未赋值（insert 不回读）→ 仍 null；business_license_url 永久 null
         assertThat(resp.getBusinessLicenseUrl()).isNull();
         assertThat(resp.getLatestPerformanceGrade()).isNull();
         assertThat(resp.getRiskWarning()).isNull();
@@ -647,6 +648,27 @@ class SupplierServiceImplTest {
         assertThatThrownBy(() -> service.get(1L))
                 .isInstanceOfSatisfying(BusinessException.class,
                         ex -> assertThat(ex.getCode()).isEqualTo(ErrorCode.NOT_FOUND));
+    }
+
+    /**
+     * 用户裁决 2026-10-16：toResponse 读侧开启"抄存量列值"——§3.3 归档联动已把
+     * latest_performance_grade / risk_warning 写实，出参不得再硬编码 null 丢掉存量；
+     * business_license_url 仍归二期恒 null。
+     */
+    @Test
+    void getPassesThroughArchivedGradeAndRiskWarningFromEntityColumns() {
+        when(currentUserProvider.require()).thenReturn(auditor());
+        Supplier row = existing(1L, "NORMAL", "91330100MA27XXXX8X", 4, 2L);
+        row.setLatestPerformanceGrade("B");
+        row.setRiskWarning(Boolean.TRUE);
+        when(supplierMapper.selectById(1L)).thenReturn(row);
+        when(userMapper.selectById(2L)).thenReturn(zhangSan());
+
+        SupplierResponse resp = service.get(1L);
+
+        assertThat(resp.getLatestPerformanceGrade()).isEqualTo("B");
+        assertThat(resp.getRiskWarning()).isTrue();
+        assertThat(resp.getBusinessLicenseUrl()).isNull();
     }
 
     // ==================== §1.5 delete ====================

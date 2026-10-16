@@ -216,12 +216,14 @@ class SupplierSubmitAuditIntegrationTest {
         assertThat(data.get("status").asText()).isEqualTo("PENDING_REVIEW");
         // version 自增后回传，供 §2.2 审核取值（契约 §2.1 响应说明）
         assertThat(data.get("version").asInt()).isEqualTo(2);
-        // SupplierResponse 全 20 字段整态回传；派生三枚归二期恒 null（裁决 2026-10-14 16:15）
+        // SupplierResponse 全 20 字段整态回传；读侧口径（裁决 2026-10-16 修订）：
+        // business_license_url 仍归二期恒 null；latest_performance_grade 新建未归档 NULL；
+        // risk_warning 因 DDL NOT NULL DEFAULT 0，建档 INSERT 不含该列后 DB 默认 0 → 透出 false（非 null）
         assertThat(data.has("tax_no")).isTrue();
         assertThat(data.has("created_by_name")).isTrue();
         assertThat(data.get("business_license_url").isNull()).isTrue();
         assertThat(data.get("latest_performance_grade").isNull()).isTrue();
-        assertThat(data.get("risk_warning").isNull()).isTrue();
+        assertThat(data.get("risk_warning").asBoolean()).isFalse();
 
         Supplier persisted = supplierMapper.selectById(id);
         assertThat(persisted.getStatus()).isEqualTo("PENDING_REVIEW");

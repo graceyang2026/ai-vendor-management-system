@@ -10,9 +10,11 @@ import lombok.ToString;
 /**
  * 供应商响应体（docs/api-spec.md §2 SupplierResponse，契约附录 A1 —— <b>20 字段一个不能少</b>）。
  *
- * 派生字段归二期（用户裁决 2026-10-14 16:15）：{@code business_license_url}、
- * {@code latest_performance_grade}、{@code risk_warning} 三枚字段<b>保留在契约形态里但本批恒为 null</b>，
- * 后端不写任何派生计算，也绝不从存量列抄值冒充派生结果（Supplier 实体相应地不映射这两列）。
+ * 派生字段读侧口径（用户裁决 2026-10-14 16:15 归二期，2026-10-16 修订收窄）：
+ * {@code business_license_url} <b>保留在契约形态里但仍恒 null</b>（跨表派生未开启）；
+ * {@code latest_performance_grade}、{@code risk_warning} 自 2026-10-16 起从 Supplier 实体
+ * 存量列透出（两列已于 2026-10-15 模块三 entity 化并由 §3.3 归档联动写侧落库），
+ * 本 DTO 仍不引入任何派生计算，存 NULL/false 原样回显。
  *
  * 日期时间一律 String 化输出（yyyy-MM-dd / yyyy-MM-dd'T'HH:mm:ss），与契约 TS 侧 string 对齐；
  * JSON 字段物理 snake_case：逐字段显式 @JsonProperty，不依赖全局 SNAKE_CASE 配置。
@@ -82,11 +84,11 @@ public class SupplierResponse {
     @JsonProperty("updated_at")
     private String updatedAt;
 
-    /** 派生字段，归二期，本批恒 null（裁决 2026-10-14 16:15） */
+    /** 归档列存量透出（裁决 2026-10-16，§3.3 写侧落库后读侧开启；未归档时 NULL） */
     @JsonProperty("latest_performance_grade")
     private String latestPerformanceGrade;
 
-    /** 派生字段，归二期，本批恒 null（Boolean 而非 boolean，保住"未计算"与"false"的语义区分） */
+    /** 归档列存量透出（裁决 2026-10-16；Boolean 而非 boolean，保住"从未建档落库"与"false"的语义区分） */
     @JsonProperty("risk_warning")
     private Boolean riskWarning;
 }

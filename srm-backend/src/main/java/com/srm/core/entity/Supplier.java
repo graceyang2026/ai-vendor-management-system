@@ -25,9 +25,10 @@ import java.time.LocalDateTime;
  * latest_performance_grade / risk_warning 两列（模块三 §3.3 归档联动新增映射，2026-10-15 裁决）：
  * - <b>写侧已闭合</b>：绩效评价 APPROVE 归档时由 PerformanceEvaluationServiceImpl 同事务回写
  *   （评级 + 风险标，只打标不改供应商状态）。
- * - <b>读侧仍恒 null</b>：SupplierResponse 的这两枚派生字段按用户裁决 2026-10-14 16:15 归二期，
- *   SupplierServiceImpl.toResponse 硬编码 null，不经本实体取值——即"库里已写实、出参不暴露"，
- *   两处裁决的张力已留痕上报（见 docs/record/会话记录-backend-20261015.md）。
+ * - <b>读侧已开启（用户裁决 2026-10-16）</b>：SupplierServiceImpl.toResponse 直接从本实体
+ *   存量列取值透出，不再硬编码 null（原 2026-10-14 16:15"归二期"裁决对本两列已失效，
+ *   仅 business_license_url 维持二期口径）。注意：新建行经 DB DEFAULT 0 读出 risk_warning=false，
+ *   建档当场回显仍为内存实体的 null（insert 不回读），两者口径不同属已知事实。
  * - 列可空性：latest_performance_grade 无默认值（NULL 表示从未归档评价），risk_warning DDL 为
  *   {@code NOT NULL DEFAULT 0}，但实体侧刻意用包装类型 {@link Boolean}（其余 TINYINT(1) 列同族范式），
  *   以区分"未计算"与"计算过且为 false"。MyBatis-Plus 默认非空插入策略下，
