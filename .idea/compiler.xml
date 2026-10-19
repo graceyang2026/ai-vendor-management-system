@@ -15,7 +15,6 @@
     </annotationProcessing>
     <bytecodeTargetLevel>
       <module name="ai-vendor-management-system" target="17" />
-      <module name="srm-backend" target="17" />
     </bytecodeTargetLevel>
   </component>
   <component name="JavacSettings">
